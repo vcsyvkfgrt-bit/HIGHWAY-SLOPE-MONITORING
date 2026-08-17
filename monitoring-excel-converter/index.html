@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>监测 Excel 本地转换器</title>
+  <script src="./xlsx.full.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #f3f6fa;
+      color: #1f2937;
+      font-family: "Microsoft YaHei", Arial, sans-serif;
+      letter-spacing: 0;
+    }
+    .page {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 28px 22px 42px;
+    }
+    .shell {
+      overflow: hidden;
+      border: 1px solid #dfe6ef;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 8px 28px rgba(31, 41, 55, 0.08);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      min-height: 72px;
+      padding: 0 24px;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    h1 {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .badge {
+      padding: 5px 10px;
+      border: 1px solid #b7d6ff;
+      border-radius: 4px;
+      background: #eef6ff;
+      color: #1d6fd8;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .content {
+      padding: 24px;
+    }
+    .drop {
+      display: grid;
+      place-items: center;
+      min-height: 238px;
+      border: 2px dashed #b8c3d2;
+      border-radius: 8px;
+      background: #fafcff;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .16s, background .16s;
+    }
+    .drop:hover,
+    .drop.dragging {
+      border-color: #409eff;
+      background: #f0f7ff;
+    }
+    .drop strong {
+      display: block;
+      margin-top: 10px;
+      font-size: 17px;
+    }
+    .drop span {
+      display: block;
+      margin-top: 7px;
+      color: #6b7280;
+      font-size: 13px;
+    }
+    .upload-icon {
+      width: 48px;
+      height: 48px;
+      color: #409eff;
+    }
+    input[type=file] { display: none; }
+    .status {
+      display: none;
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .status.ok {
+      display: block;
+      border: 1px solid #b3e19d;
+      background: #f0f9eb;
+      color: #3d7d1f;
+    }
+    .status.warn {
+      display: block;
+      border: 1px solid #f3d19e;
+      background: #fdf6ec;
+      color: #9a6200;
+    }
+    .status.error {
+      display: block;
+      border: 1px solid #fab6b6;
+      background: #fef0f0;
+      color: #b42318;
+    }
+    .result-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+    .batch-actions {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 18px;
+      padding: 12px 14px;
+      border: 1px solid #dfe6ef;
+      border-radius: 6px;
+      background: #fff;
+    }
+    .batch-actions.visible { display: flex; }
+    .batch-actions span {
+      color: #606266;
+      font-size: 13px;
+    }
+    .segment-panel {
+      margin-top: 16px;
+      padding: 14px 16px;
+      border: 1px solid #dbeafe;
+      border-radius: 8px;
+      background: #f8fbff;
+    }
+    .segment-panel label {
+      display: block;
+      margin-bottom: 8px;
+      color: #1f2937;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .segment-panel textarea {
+      width: 100%;
+      min-height: 76px;
+      padding: 10px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 6px;
+      resize: vertical;
+      font-family: "Microsoft YaHei", Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .segment-panel small {
+      display: block;
+      margin-top: 8px;
+      color: #64748b;
+      line-height: 1.6;
+    }
+    .batch-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .file-group-title {
+      grid-column: 1 / -1;
+      margin-top: 4px;
+      padding: 10px 12px;
+      border-left: 3px solid #409eff;
+      background: #f5f7fa;
+      color: #303133;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .result-card {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 126px;
+      padding: 16px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #fff;
+    }
+    .result-card h3 {
+      margin: 0;
+      font-size: 15px;
+    }
+    .result-card p {
+      margin: 0;
+      color: #6b7280;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    button {
+      align-self: flex-start;
+      height: 34px;
+      padding: 0 14px;
+      border: 1px solid #409eff;
+      border-radius: 4px;
+      background: #409eff;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button.secondary {
+      border-color: #dcdfe6;
+      background: #fff;
+      color: #303133;
+    }
+    .help {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0;
+      margin-top: 22px;
+      border: 1px solid #e5e7eb;
+      background: #fff;
+    }
+    .help div {
+      min-height: 92px;
+      padding: 14px 16px;
+    }
+    .help div + div { border-left: 1px solid #e5e7eb; }
+    .help b {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .help span {
+      color: #6b7280;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    @media (max-width: 760px) {
+      .page { padding: 12px; }
+      header { align-items: flex-start; flex-direction: column; padding: 16px; }
+      .content { padding: 16px; }
+      .help { grid-template-columns: 1fr; }
+      .help div + div { border-top: 1px solid #e5e7eb; border-left: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="shell">
+      <header>
+        <h1>高速边坡监测 Excel 本地转换器</h1>
+        <span class="badge">本地运行 · 不上传文件</span>
+      </header>
+      <main class="content">
+        <label id="drop" class="drop">
+          <input id="fileInput" type="file" accept=".xlsx,.xls" multiple>
+          <div>
+            <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M12 16V4"></path>
+              <path d="m7 9 5-5 5 5"></path>
+              <path d="M20 16.5V19a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-2.5"></path>
+            </svg>
+            <strong>拖入一个或多个原始 Excel，或点击选择文件</strong>
+            <span>批量输出地表位移和沉降两个系统录入模板，可一键打包下载</span>
+          </div>
+        </label>
+
+        <div id="status" class="status"></div>
+        <div class="segment-panel">
+          <label for="segmentRules">按标段拆分规则（可选）</label>
+          <textarea id="segmentRules" placeholder="示例：&#10;SYXCTJ-1标:H1,H2,H3,H33,H34&#10;SYXCTJ-2标:H6,H22,B3&#10;SYXCTJ-3标:H10,H24"></textarea>
+          <small>系统会优先按这里填写的关键词识别标段；不填写时，会从文件名、工作表名、测点名中自动识别 SYXCTJ-1 / SYXCTJ-2 / SYXCTJ-3。</small>
+        </div>
+        <div id="batchActions" class="batch-actions"></div>
+        <div id="results" class="result-grid"></div>
+
+        <section class="help">
+          <div><b>适用格式</b><span>累计位移量、累计沉降量、成果统计表、横向多测点块表。</span></div>
+          <div><b>转换内容</b><span>只提取累计值，单位为 mm，不提取本次增量和变化速率。</span></div>
+          <div><b>批量处理</b><span>支持一次选择多个文件，转换完成后可下载全部 ZIP 或单独下载某个模板。</span></div>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script src="./converter.js"></script>
+</body>
+</html>

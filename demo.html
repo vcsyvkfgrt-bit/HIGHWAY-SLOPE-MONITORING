@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>监测点位二维码标识管理系统</title>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            background: #1a1a2e;
+            min-height: 100vh;
+            color: #fff;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
+            padding: 20px 40px;
+            border-bottom: 1px solid #2d3f50;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .header h1::before {
+            content: '📍';
+            font-size: 28px;
+        }
+
+        .main-container {
+            display: flex;
+            gap: 30px;
+            padding: 30px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        /* 施工现场模拟区域 */
+        .site-simulation {
+            flex: 2;
+            background: linear-gradient(180deg, #87CEEB 0%, #87CEEB 30%, #228B22 30%, #228B22 35%, #8B7355 35%, #8B7355 100%);
+            border-radius: 16px;
+            min-height: 600px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+
+        /* 天空 */
+        .sky {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 30%;
+            background: linear-gradient(180deg, #4A90D9 0%, #87CEEB 100%);
+        }
+
+        .cloud {
+            position: absolute;
+            background: white;
+            border-radius: 50px;
+            opacity: 0.9;
+        }
+
+        .cloud::before, .cloud::after {
+            content: '';
+            position: absolute;
+            background: white;
+            border-radius: 50%;
+        }
+
+        .cloud-1 {
+            width: 80px;
+            height: 30px;
+            top: 40px;
+            left: 10%;
+        }
+        .cloud-1::before {
+            width: 40px;
+            height: 40px;
+            top: -20px;
+            left: 10px;
+        }
+        .cloud-1::after {
+            width: 50px;
+            height: 50px;
+            top: -25px;
+            right: 10px;
+        }
+
+        .cloud-2 {
+            width: 100px;
+            height: 35px;
+            top: 60px;
+            right: 15%;
+        }
+        .cloud-2::before {
+            width: 50px;
+            height: 50px;
+            top: -25px;
+            left: 15px;
+        }
+        .cloud-2::after {
+            width: 60px;
+            height: 55px;
+            top: -30px;
+            right: 15px;
+        }
+
+        /* 山坡/边坡 */
+        .slope {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 70%;
+            background: linear-gradient(165deg, #6B8E23 0%, #556B2F 30%, #8B7355 60%, #A0826D 100%);
+            clip-path: polygon(0 30%, 100% 0%, 100% 100%, 0% 100%);
+        }
+
+        .slope-texture {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            background-image: 
+                repeating-linear-gradient(90deg, transparent, transparent 50px, rgba(0,0,0,0.05) 50px, rgba(0,0,0,0.05) 51px),
+                repeating-linear-gradient(0deg, transparent, transparent 30px, rgba(0,0,0,0.03) 30px, rgba(0,0,0,0.03) 31px);
+        }
+
+        /* 测斜管 */
+        .inclinometer-pipe {
+            position: absolute;
+            width: 30px;
+            height: 200px;
+            background: linear-gradient(90deg, #606060 0%, #909090 50%, #606060 100%);
+            border-radius: 5px 5px 0 0;
+            bottom: 150px;
+            left: 25%;
+            transform: rotate(-15deg);
+            box-shadow: 3px 3px 10px rgba(0,0,0,0.3);
+        }
+
+        .inclinometer-pipe::before {
+            content: '';
+            position: absolute;
+            top: -15px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 40px;
+            height: 20px;
+            background: linear-gradient(90deg, #505050 0%, #808080 50%, #505050 100%);
+            border-radius: 5px;
+        }
+
+        /* 观测墩 */
+        .observation-pier {
+            position: absolute;
+            width: 50px;
+            height: 80px;
+            background: linear-gradient(90deg, #C0C0C0 0%, #E8E8E8 50%, #C0C0C0 100%);
+            bottom: 120px;
+            left: 55%;
+            clip-path: polygon(10% 0%, 90% 0%, 100% 100%, 0% 100%);
+            box-shadow: 3px 3px 10px rgba(0,0,0,0.3);
+        }
+
+        .observation-pier::before {
+            content: '';
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 60px;
+            height: 25px;
+            background: linear-gradient(90deg, #A0A0A0 0%, #D0D0D0 50%, #A0A0A0 100%);
+            border-radius: 3px;
+        }
+
+        .prism {
+            position: absolute;
+            top: -45px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 25px;
+            height: 25px;
+            background: linear-gradient(135deg, #FFD700 0%, #FFA500 100%);
+            clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
+        }
+
+        /* 锚索测力计 */
+        .anchor-meter {
+            position: absolute;
+            bottom: 200px;
+            right: 20%;
+        }
+
+        .anchor-cable {
+            width: 8px;
+            height: 150px;
+            background: linear-gradient(90deg, #404040 0%, #606060 50%, #404040 100%);
+            transform: rotate(-30deg);
+            transform-origin: top center;
+        }
+
+        .anchor-head {
+            position: absolute;
+            top: -30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 50px;
+            height: 50px;
+            background: radial-gradient(circle, #FFD700 0%, #B8860B 100%);
+            border-radius: 50%;
+            box-shadow: 0 0 10px rgba(255,215,0,0.5);
+        }
+
+        .anchor-head::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            background: #404040;
+            border-radius: 50%;
+        }
+
+        /* 水位孔 */
+        .water-well {
+            position: absolute;
+            width: 35px;
+            height: 60px;
+            background: linear-gradient(90deg, #404040 0%, #606060 50%, #404040 100%);
+            border-radius: 5px 5px 0 0;
+            bottom: 80px;
+            right: 35%;
+            box-shadow: 3px 3px 10px rgba(0,0,0,0.3);
+        }
+
+        .water-well::before {
+            content: '';
+            position: absolute;
+            top: 5px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 20px;
+            height: 20px;
+            background: #1E90FF;
+            border-radius: 50%;
+            box-shadow: inset 0 0 10px rgba(0,0,0,0.3);
+        }
+
+        .well-cap {
+            position: absolute;
+            top: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 45px;
+            height: 15px;
+            background: linear-gradient(90deg, #303030 0%, #505050 50%, #303030 100%);
+            border-radius: 3px;
+        }
+
+        /* 二维码标识牌 */
+        .qr-sign {
+            position: absolute;
+            cursor: pointer;
+            transition: transform 0.3s;
+            z-index: 10;
+        }
+
+        .qr-sign:hover {
+            transform: scale(1.1);
+        }
+
+        .sign-pole {
+            width: 8px;
+            height: 80px;
+            background: linear-gradient(90deg, #505050 0%, #808080 50%, #505050 100%);
+            margin: 0 auto;
+        }
+
+        .sign-board {
+            width: 100px;
+            background: #fff;
+            border-radius: 8px;
+            padding: 8px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+            border: 3px solid #1890ff;
+            position: relative;
+        }
+
+        .sign-board::before {
+            content: '';
+            position: absolute;
+            top: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            border-left: 10px solid transparent;
+            border-right: 10px solid transparent;
+            border-bottom: 8px solid #1890ff;
+        }
+
+        .sign-header {
+            background: linear-gradient(135deg, #1890ff 0%, #40a9ff 100%);
+            color: white;
+            text-align: center;
+            padding: 4px;
+            border-radius: 4px 4px 0 0;
+            font-size: 9px;
+            font-weight: bold;
+        }
+
+        .sign-qr {
+            background: white;
+            padding: 5px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .sign-qr canvas {
+            width: 60px !important;
+            height: 60px !important;
+        }
+
+        .sign-info {
+            font-size: 7px;
+            color: #333;
+            text-align: center;
+            padding: 3px;
+            line-height: 1.4;
+        }
+
+        .sign-type {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 6px;
+            margin-top: 3px;
+        }
+
+        .type-surface { background: #e6f7ff; color: #1890ff; }
+        .type-deep { background: #f9f0ff; color: #722ed1; }
+        .type-water { background: #e6fffb; color: #13c2c2; }
+        .type-anchor { background: #fff7e6; color: #fa8c16; }
+
+        /* 标识牌位置 */
+        .qr-sign-1 { bottom: 280px; left: 22%; }
+        .qr-sign-2 { bottom: 230px; left: 52%; }
+        .qr-sign-3 { bottom: 130px; right: 33%; }
+        .qr-sign-4 { bottom: 280px; right: 18%; }
+
+        /* 安全围栏 */
+        .safety-fence {
+            position: absolute;
+            bottom: 50px;
+            left: 10%;
+            right: 10%;
+            height: 40px;
+            display: flex;
+            gap: 30px;
+        }
+
+        .fence-post {
+            width: 10px;
+            height: 40px;
+            background: linear-gradient(90deg, #FF6B00 0%, #FF8C00 50%, #FF6B00 100%);
+            border-radius: 2px;
+            position: relative;
+        }
+
+        .fence-post::after {
+            content: '';
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            width: calc(30px - 10px);
+            height: 5px;
+            background: repeating-linear-gradient(90deg, #FF6B00, #FF6B00 5px, #FFD700 5px, #FFD700 10px);
+        }
+
+        /* 施工人员 */
+        .worker {
+            position: absolute;
+            bottom: 100px;
+            left: 40%;
+        }
+
+        .worker-body {
+            width: 20px;
+            height: 35px;
+            background: #FF6B00;
+            border-radius: 5px 5px 0 0;
+            position: relative;
+        }
+
+        .worker-head {
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 18px;
+            height: 18px;
+            background: #FFE4C4;
+            border-radius: 50%;
+        }
+
+        .worker-helmet {
+            position: absolute;
+            top: -28px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 24px;
+            height: 14px;
+            background: #FFD700;
+            border-radius: 50% 50% 0 0;
+        }
+
+        .worker-legs {
+            display: flex;
+            gap: 4px;
+        }
+
+        .worker-leg {
+            width: 8px;
+            height: 25px;
+            background: #2F4F4F;
+        }
+
+        /* 扫码动画 */
+        .scan-effect {
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            border: 3px solid #1890ff;
+            border-radius: 10px;
+            opacity: 0;
+            pointer-events: none;
+            animation: none;
+        }
+
+        .scanning .scan-effect {
+            animation: scan-pulse 1.5s ease-out;
+        }
+
+        @keyframes scan-pulse {
+            0% {
+                opacity: 1;
+                transform: scale(0.8);
+            }
+            100% {
+                opacity: 0;
+                transform: scale(1.5);
+            }
+        }
+
+        .scan-line {
+            position: absolute;
+            width: 100%;
+            height: 3px;
+            background: linear-gradient(90deg, transparent, #1890ff, transparent);
+            top: 0;
+            opacity: 0;
+        }
+
+        .scanning .scan-line {
+            animation: scan-line 1.5s ease-in-out;
+        }
+
+        @keyframes scan-line {
+            0% { top: 0; opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+
+        /* 右侧信息面板 */
+        .info-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .panel-card {
+            background: linear-gradient(135deg, #16213e 0%, #1a1a2e 100%);
+            border-radius: 16px;
+            padding: 25px;
+            border: 1px solid #2d3f50;
+        }
+
+        .panel-card h3 {
+            font-size: 16px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #1890ff;
+        }
+
+        /* 标识牌详情卡片 */
+        .detail-card {
+            background: #fff;
+            border-radius: 12px;
+            overflow: hidden;
+            color: #333;
+        }
+
+        .detail-header {
+            background: linear-gradient(135deg, #1890ff 0%, #40a9ff 100%);
+            color: white;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .detail-header h4 {
+            font-size: 18px;
+            margin-bottom: 5px;
+        }
+
+        .detail-header p {
+            font-size: 12px;
+            opacity: 0.9;
+        }
+
+        .detail-body {
+            padding: 20px;
+        }
+
+        .detail-qr {
+            display: flex;
+            justify-content: center;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .detail-info {
+            display: grid;
+            gap: 12px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px dashed #e8e8e8;
+        }
+
+        .info-row:last-child {
+            border-bottom: none;
+        }
+
+        .info-label {
+            color: #666;
+            font-size: 13px;
+        }
+
+        .info-value {
+            font-weight: 600;
+            font-size: 13px;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+        }
+
+        .status-normal {
+            background: #f6ffed;
+            color: #52c41a;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        /* 标识牌列表 */
+        .sign-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-height: 250px;
+            overflow-y: auto;
+        }
+
+        .sign-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 12px;
+            background: rgba(24, 144, 255, 0.1);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            border: 1px solid transparent;
+        }
+
+        .sign-item:hover {
+            background: rgba(24, 144, 255, 0.2);
+            border-color: #1890ff;
+        }
+
+        .sign-item.active {
+            background: rgba(24, 144, 255, 0.25);
+            border-color: #1890ff;
+        }
+
+        .sign-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+        }
+
+        .sign-icon.surface { background: rgba(24, 144, 255, 0.2); }
+        .sign-icon.deep { background: rgba(114, 46, 209, 0.2); }
+        .sign-icon.water { background: rgba(19, 194, 194, 0.2); }
+        .sign-icon.anchor { background: rgba(250, 140, 22, 0.2); }
+
+        .sign-item-info h4 {
+            font-size: 14px;
+            margin-bottom: 3px;
+        }
+
+        .sign-item-info p {
+            font-size: 11px;
+            color: #8892a0;
+        }
+
+        /* 打印样式预览 */
+        .print-preview {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            color: #333;
+        }
+
+        .print-sign {
+            border: 3px solid #1890ff;
+            border-radius: 10px;
+            padding: 15px;
+            width: 180px;
+            margin: 0 auto;
+        }
+
+        .print-header {
+            background: #1890ff;
+            color: white;
+            text-align: center;
+            padding: 8px;
+            border-radius: 5px 5px 0 0;
+            font-weight: bold;
+            font-size: 12px;
+        }
+
+        .print-qr {
+            display: flex;
+            justify-content: center;
+            padding: 15px;
+        }
+
+        .print-info {
+            text-align: center;
+            font-size: 10px;
+            line-height: 1.6;
+        }
+
+        .print-footer {
+            background: #f5f5f5;
+            text-align: center;
+            padding: 8px;
+            border-radius: 0 0 5px 5px;
+            font-size: 9px;
+            color: #666;
+            margin-top: 10px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            justify-content: center;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #1890ff 0%, #40a9ff 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(24, 144, 255, 0.4);
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        /* 提示标签 */
+        .scene-label {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px 12px;
+            border-radius: 15px;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+
+        .label-pipe { bottom: 360px; left: 18%; }
+        .label-pier { bottom: 210px; left: 56%; }
+        .label-well { bottom: 150px; right: 30%; }
+        .label-anchor { bottom: 360px; right: 15%; }
+
+        /* 信息弹窗 */
+        .popup {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+
+        .popup.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .popup-content {
+            background: white;
+            border-radius: 16px;
+            width: 90%;
+            max-width: 400px;
+            overflow: hidden;
+            transform: scale(0.9);
+            transition: transform 0.3s;
+            color: #333;
+        }
+
+        .popup.active .popup-content {
+            transform: scale(1);
+        }
+
+        .popup-header {
+            background: linear-gradient(135deg, #1890ff 0%, #40a9ff 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .popup-body {
+            padding: 25px;
+        }
+
+        .popup-qr {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        .popup-close {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            width: 30px;
+            height: 30px;
+            border: none;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 18px;
+        }
+
+        /* 响应式 */
+        @media (max-width: 1200px) {
+            .main-container {
+                flex-direction: column;
+            }
+            
+            .site-simulation {
+                min-height: 500px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <h1>监测点位二维码标识管理系统</h1>
+    </header>
+
+    <div class="main-container">
+        <!-- 施工现场模拟 -->
+        <div class="site-simulation">
+            <!-- 天空 -->
+            <div class="sky">
+                <div class="cloud cloud-1"></div>
+                <div class="cloud cloud-2"></div>
+            </div>
+
+            <!-- 边坡 -->
+            <div class="slope">
+                <div class="slope-texture"></div>
+            </div>
+
+            <!-- 测斜管 -->
+            <div class="inclinometer-pipe"></div>
+            <span class="scene-label label-pipe">深层位移测斜管</span>
+
+            <!-- 观测墩 -->
+            <div class="observation-pier">
+                <div class="prism"></div>
+            </div>
+            <span class="scene-label label-pier">地表位移观测墩</span>
+
+            <!-- 水位孔 -->
+            <div class="water-well">
+                <div class="well-cap"></div>
+            </div>
+            <span class="scene-label label-well">地下水位监测孔</span>
+
+            <!-- 锚索测力计 -->
+            <div class="anchor-meter">
+                <div class="anchor-head"></div>
+                <div class="anchor-cable"></div>
+            </div>
+            <span class="scene-label label-anchor">锚索测力计</span>
+
+            <!-- 安全围栏 -->
+            <div class="safety-fence">
+                <div class="fence-post"></div>
+                <div class="fence-post"></div>
+                <div class="fence-post"></div>
+                <div class="fence-post"></div>
+                <div class="fence-post"></div>
+                <div class="fence-post"></div>
+                <div class="fence-post"></div>
+                <div class="fence-post"></div>
+            </div>
+
+            <!-- 施工人员 -->
+            <div class="worker">
+                <div class="worker-helmet"></div>
+                <div class="worker-head"></div>
+                <div class="worker-body"></div>
+                <div class="worker-legs">
+                    <div class="worker-leg"></div>
+                    <div class="worker-leg"></div>
+                </div>
+            </div>
+
+            <!-- 二维码标识牌 -->
+            <div class="qr-sign qr-sign-1" onclick="showDetail('SC-01')" data-id="SC-01">
+                <div class="sign-board">
+                    <div class="sign-header">边坡监测点</div>
+                    <div class="sign-qr" id="qr-SC-01"></div>
+                    <div class="sign-info">
+                        <div><strong>SC-01</strong></div>
+                        <div>K15+230</div>
+                        <span class="sign-type type-deep">深层位移</span>
+                    </div>
+                </div>
+                <div class="sign-pole"></div>
+            </div>
+
+            <div class="qr-sign qr-sign-2" onclick="showDetail('DB-03')" data-id="DB-03">
+                <div class="sign-board">
+                    <div class="sign-header">边坡监测点</div>
+                    <div class="sign-qr" id="qr-DB-03"></div>
+                    <div class="sign-info">
+                        <div><strong>DB-03</strong></div>
+                        <div>K15+245</div>
+                        <span class="sign-type type-surface">地表位移</span>
+                    </div>
+                </div>
+                <div class="sign-pole"></div>
+            </div>
+
+            <div class="qr-sign qr-sign-3" onclick="showDetail('SW-02')" data-id="SW-02">
+                <div class="sign-board">
+                    <div class="sign-header">边坡监测点</div>
+                    <div class="sign-qr" id="qr-SW-02"></div>
+                    <div class="sign-info">
+                        <div><strong>SW-02</strong></div>
+                        <div>K15+260</div>
+                        <span class="sign-type type-water">地下水位</span>
+                    </div>
+                </div>
+                <div class="sign-pole"></div>
+            </div>
+
+            <div class="qr-sign qr-sign-4" onclick="showDetail('MS-05')" data-id="MS-05">
+                <div class="sign-board">
+                    <div class="sign-header">边坡监测点</div>
+                    <div class="sign-qr" id="qr-MS-05"></div>
+                    <div class="sign-info">
+                        <div><strong>MS-05</strong></div>
+                        <div>K15+275</div>
+                        <span class="sign-type type-anchor">锚索应力</span>
+                    </div>
+                </div>
+                <div class="sign-pole"></div>
+            </div>
+        </div>
+
+        <!-- 信息面板 -->
+        <div class="info-panel">
+            <!-- 当前选中的标识牌详情 -->
+            <div class="panel-card">
+                <h3>📋 标识牌详情</h3>
+                <div class="detail-card" id="detailCard">
+                    <div class="detail-header">
+                        <h4 id="detailTitle">SC-01</h4>
+                        <p id="detailSubtitle">深层位移监测点</p>
+                    </div>
+                    <div class="detail-body">
+                        <div class="detail-qr" id="detailQR"></div>
+                        <div class="detail-info">
+                            <div class="info-row">
+                                <span class="info-label">监测类型</span>
+                                <span class="info-value" id="detailType">深层位移</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">设计里程</span>
+                                <span class="info-value" id="detailMileage">K15+230</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">安装位置</span>
+                                <span class="info-value" id="detailLocation">边坡中部</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">设备状态</span>
+                                <span class="status-badge status-normal">
+                                    <span class="status-dot"></span>
+                                    正常运行
+                                </span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">安装日期</span>
+                                <span class="info-value" id="detailDate">2024-01-15</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 监测点列表 -->
+            <div class="panel-card">
+                <h3>📍 监测点列表</h3>
+                <div class="sign-list">
+                    <div class="sign-item active" onclick="showDetail('SC-01')">
+                        <div class="sign-icon deep">📊</div>
+                        <div class="sign-item-info">
+                            <h4>SC-01 深层位移测斜管</h4>
+                            <p>K15+230 | 孔深20m</p>
+                        </div>
+                    </div>
+                    <div class="sign-item" onclick="showDetail('DB-03')">
+                        <div class="sign-icon surface">📍</div>
+                        <div class="sign-item-info">
+                            <h4>DB-03 地表位移观测墩</h4>
+                            <p>K15+245 | 边坡中部</p>
+                        </div>
+                    </div>
+                    <div class="sign-item" onclick="showDetail('SW-02')">
+                        <div class="sign-icon water">💧</div>
+                        <div class="sign-item-info">
+                            <h4>SW-02 地下水位监测孔</h4>
+                            <p>K15+260 | 孔深15m</p>
+                        </div>
+                    </div>
+                    <div class="sign-item" onclick="showDetail('MS-05')">
+                        <div class="sign-icon anchor">⚓</div>
+                        <div class="sign-item-info">
+                            <h4>MS-05 锚索测力计</h4>
+                            <p>K15+275 | 第三排锚索</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 打印预览 -->
+            <div class="panel-card">
+                <h3>🖨️ 标识牌打印预览</h3>
+                <div class="print-preview">
+                    <div class="print-sign">
+                        <div class="print-header">边坡监测点标识</div>
+                        <div class="print-qr" id="printQR"></div>
+                        <div class="print-info">
+                            <div><strong style="font-size: 14px;" id="printId">SC-01</strong></div>
+                            <div>里程: <span id="printMileage">K15+230</span></div>
+                            <div>类型: <span id="printType">深层位移</span></div>
+                        </div>
+                        <div class="print-footer">
+                            扫码查看监测数据<br>
+                            XXX项目数字化管理平台
+                        </div>
+                    </div>
+                </div>
+                <div class="btn-group">
+                    <button class="btn btn-primary" onclick="printSign()">
+                        🖨️ 打印标识牌
+                    </button>
+                    <button class="btn btn-primary" onclick="exportBatch()">
+                        📦 批量导出
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 弹窗 -->
+    <div class="popup" id="popup">
+        <div class="popup-content">
+            <button class="popup-close" onclick="closePopup()">×</button>
+            <div class="popup-header">
+                <h3 id="popupTitle">监测点详情</h3>
+                <p id="popupSubtitle">扫码获取实时数据</p>
+            </div>
+            <div class="popup-body">
+                <div class="popup-qr" id="popupQR"></div>
+                <div class="detail-info" id="popupInfo"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 监测点数据
+        const monitorPoints = {
+            'SC-01': {
+                name: 'SC-01',
+                type: '深层位移',
+                typeClass: 'deep',
+                mileage: 'K15+230',
+                location: '边坡中部',
+                depth: '20m',
+                installDate: '2024-01-15',
+                description: '深层位移测斜管',
+                qrData: 'https://monitor.example.com/point/SC-01'
+            },
+            'DB-03': {
+                name: 'DB-03',
+                type: '地表位移',
+                typeClass: 'surface',
+                mileage: 'K15+245',
+                location: '边坡顶部',
+                depth: '-',
+                installDate: '2024-01-18',
+                description: '地表位移观测墩',
+                qrData: 'https://monitor.example.com/point/DB-03'
+            },
+            'SW-02': {
+                name: 'SW-02',
+                type: '地下水位',
+                typeClass: 'water',
+                mileage: 'K15+260',
+                location: '边坡坡脚',
+                depth: '15m',
+                installDate: '2024-01-20',
+                description: '地下水位监测孔',
+                qrData: 'https://monitor.example.com/point/SW-02'
+            },
+            'MS-05': {
+                name: 'MS-05',
+                type: '锚索应力',
+                typeClass: 'anchor',
+                mileage: 'K15+275',
+                location: '第三排锚索',
+                depth: '25m',
+                installDate: '2024-01-22',
+                description: '锚索测力计',
+                qrData: 'https://monitor.example.com/point/MS-05'
+            }
+        };
+
+        // 生成二维码
+        function generateQR(elementId, data, size = 60) {
+            const element = document.getElementById(elementId);
+            if (element) {
+                element.innerHTML = '';
+                QRCode.toCanvas(data, { 
+                    width: size,
+                    margin: 1,
+                    color: {
+                        dark: '#1890ff',
+                        light: '#ffffff'
+                    }
+                }, function (error, canvas) {
+                    if (error) console.error(error);
+                    element.appendChild(canvas);
+                });
+            }
+        }
+
+        // 初始化所有二维码
+        function initQRCodes() {
+            Object.keys(monitorPoints).forEach(id => {
+                generateQR(`qr-${id}`, monitorPoints[id].qrData, 60);
+            });
+            // 详情二维码
+            generateQR('detailQR', monitorPoints['SC-01'].qrData, 120);
+            generateQR('printQR', monitorPoints['SC-01'].qrData, 80);
+        }
+
+        // 显示详情
+        function showDetail(id) {
+            const point = monitorPoints[id];
+            if (!point) return;
+
+            // 更新详情卡片
+            document.getElementById('detailTitle').textContent = point.name;
+            document.getElementById('detailSubtitle').textContent = point.description;
+            document.getElementById('detailType').textContent = point.type;
+            document.getElementById('detailMileage').textContent = point.mileage;
+            document.getElementById('detailLocation').textContent = point.location;
+            document.getElementById('detailDate').textContent = point.installDate;
+            generateQR('detailQR', point.qrData, 120);
+
+            // 更新打印预览
+            document.getElementById('printId').textContent = point.name;
+            document.getElementById('printMileage').textContent = point.mileage;
+            document.getElementById('printType').textContent = point.type;
+            generateQR('printQR', point.qrData, 80);
+
+            // 更新列表选中状态
+            document.querySelectorAll('.sign-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            event.target.closest('.sign-item')?.classList.add('active');
+
+            // 高亮对应的标识牌
+            document.querySelectorAll('.qr-sign').forEach(sign => {
+                sign.style.filter = 'brightness(0.7)';
+            });
+            document.querySelector(`[data-id="${id}"]`)?.style.setProperty('filter', 'brightness(1.2)');
+        }
+
+        // 打印标识牌
+        function printSign() {
+            alert('正在生成打印文件...\n\n标识牌将以PDF格式导出，支持防水防锈材质打印。');
+        }
+
+        // 批量导出
+        function exportBatch() {
+            alert('批量导出功能\n\n可选择导出所有监测点的二维码标识牌，支持以下格式：\n- PDF文档\n- 图片压缩包\n- Excel清单');
+        }
+
+        // 关闭弹窗
+        function closePopup() {
+            document.getElementById('popup').classList.remove('active');
+        }
+
+        // 初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            initQRCodes();
+        });
+    </script>
+</body>
+</html>

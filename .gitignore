@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+
+# Build outputs
+dist/
+frontend/dist/
+
+# Local environment
+.env
+backend/.env
+frontend/.env
+*.local
+
+# Runtime logs
+*.log
+runtime.out.log
+runtime.err.log
+dev-server.out.log
+dev-server.err.log
+server.log
+server_error.log
+
+# Uploads and generated artifacts
+backend/uploads/
+converted_monitoring_excels/
+converted_monitoring_excels_cli_check/
+converted_monitoring_excels_segment_test/
+converted_slope_cumulative_templates/
+converted_slope_cumulative_templates_python/
+inclinometer_analysis_*/
+inclinometer_upload_splits_*/
+inclinometer_zkt_format_by_date_*/
+inclinometer_zkt_format_by_hole_date_*/
+
+# Large local data files
+*.xlsx
+*.xls
+*.zip
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.cursor/
