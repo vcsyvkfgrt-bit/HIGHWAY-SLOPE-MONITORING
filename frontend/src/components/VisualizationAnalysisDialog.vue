@@ -836,7 +836,7 @@ function getLegendLayout(seriesCount, reportMode) {
   }
 }
 
-function buildSurfaceSeries({ reportMode = false } = {}) {
+function buildSurfaceSeries({ reportMode = false, includeTrendLine = true, includeReferenceLines = true } = {}) {
   const { dates, groups } = groupSurfaceRows()
   const baseSeries = Object.entries(groups).map(([name, values], index) => {
     const data = applySurfaceProcessing(dates, getSurfaceModeValues(dates, values))
@@ -853,7 +853,7 @@ function buildSurfaceSeries({ reportMode = false } = {}) {
       itemStyle: { color: visual.color, borderColor: '#ffffff', borderWidth: 0.8 },
       emphasis: { focus: 'series', lineStyle: { width: 3 } },
       data,
-      ...(index === 0 && activeWarningThreshold.value !== null ? {
+      ...(includeReferenceLines && index === 0 && activeWarningThreshold.value !== null ? {
         markLine: {
           silent: true,
           symbol: 'none',
@@ -872,7 +872,7 @@ function buildSurfaceSeries({ reportMode = false } = {}) {
     }
   })
 
-  if (!trendLineEnabled.value || !baseSeries.length) return baseSeries
+  if (!includeTrendLine || !trendLineEnabled.value || !baseSeries.length) return baseSeries
 
   if (trendLineScope.value === 'overall') {
     const trendData = buildTrendLineData(dates, buildOverallTrendValues(dates, baseSeries))
@@ -927,9 +927,9 @@ function buildSurfaceSeries({ reportMode = false } = {}) {
   return [...baseSeries, ...trendSeries]
 }
 
-function buildSurfaceOption({ reportMode = false } = {}) {
+function buildSurfaceOption({ reportMode = false, includeTrendLine = true, includeReferenceLines = true } = {}) {
   const { dates } = groupSurfaceRows()
-  const series = buildSurfaceSeries({ reportMode })
+  const series = buildSurfaceSeries({ reportMode, includeTrendLine, includeReferenceLines })
   const { legend, gridBottom, legendHeight } = getLegendLayout(series.length, reportMode)
   const unit = getSurfaceUnit()
   const displayUnit = surfaceChartMode.value === 'rate' ? `${unit}/d` : unit
@@ -1009,7 +1009,7 @@ function getDepthAxisMax() {
   return holeDepth ? Math.ceil(holeDepth / 5) * 5 : undefined
 }
 
-function buildDeepSeries(type, { reportMode = false } = {}) {
+function buildDeepSeries(type, { reportMode = false, includeReferenceLines = true } = {}) {
   const series = (deepProfile.value?.surveys || []).map((survey, index) => {
     const visual = getSeriesVisual(index)
     return {
@@ -1029,7 +1029,7 @@ function buildDeepSeries(type, { reportMode = false } = {}) {
     }
   })
 
-  if (series.length) {
+  if (includeReferenceLines && series.length) {
     series[0].markLine = {
       silent: true,
       symbol: 'none',
@@ -1051,8 +1051,8 @@ function buildDeepSeries(type, { reportMode = false } = {}) {
   return series
 }
 
-function buildDeepOption(type, { reportMode = false } = {}) {
-  const series = buildDeepSeries(type, { reportMode })
+function buildDeepOption(type, { reportMode = false, includeReferenceLines = true } = {}) {
+  const series = buildDeepSeries(type, { reportMode, includeReferenceLines })
   const { legend, gridBottom, legendHeight } = getLegendLayout(series.length, reportMode)
   const point = deepPoints.value.find(item => String(item.id) === selectedDeepPointId.value)
   const exportHeight = Math.max(MEETING_CHART_EXPORT.minHeight, 820 + legendHeight)
@@ -1139,7 +1139,7 @@ function getActiveChartKind() {
 }
 
 function getChartSeriesCount(kind) {
-  if (kind === 'surface') return buildSurfaceSeries({ reportMode: true }).length
+  if (kind === 'surface') return buildSurfaceSeries({ reportMode: true, includeTrendLine: false, includeReferenceLines: false }).length
   return deepProfile.value?.surveys?.length || 0
 }
 
@@ -1163,8 +1163,8 @@ function getAcademicChartDataUrl(kind, { pixelRatio = meetingExportPixelRatio } 
   const exportChart = echarts.init(container, null, { renderer: 'canvas', width, height })
   try {
     const option = kind === 'surface'
-      ? buildSurfaceOption({ reportMode: true })
-      : buildDeepOption(kind === 'deep-relative' ? 'relative' : 'cumulative', { reportMode: true })
+      ? buildSurfaceOption({ reportMode: true, includeTrendLine: false, includeReferenceLines: false })
+      : buildDeepOption(kind === 'deep-relative' ? 'relative' : 'cumulative', { reportMode: true, includeReferenceLines: false })
     exportChart.setOption(option, { notMerge: true, lazyUpdate: false })
     return exportChart.getDataURL({ type: 'png', pixelRatio, backgroundColor: '#ffffff' })
   } finally {
