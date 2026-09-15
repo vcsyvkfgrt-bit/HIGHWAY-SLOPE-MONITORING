@@ -109,6 +109,28 @@
           <el-button v-if="processingMethod !== 'raw'" text @click="resetProcessing">恢复原始曲线</el-button>
         </div>
 
+        <div v-if="!isInclinometerMode" class="trend-bar" :class="{ active: trendLineEnabled }">
+          <div class="processing-label">
+            <strong>趋势线</strong>
+            <span>辅助判断长期变化方向</span>
+          </div>
+          <el-switch
+            v-model="trendLineEnabled"
+            active-text="显示"
+            inactive-text="隐藏"
+            @change="renderSurfaceCharts"
+          />
+          <el-select v-model="trendLineMethod" class="trend-select" :disabled="!trendLineEnabled" @change="renderSurfaceCharts">
+            <el-option label="线性趋势" value="linear" />
+            <el-option label="二次趋势" value="quadratic" />
+          </el-select>
+          <el-select v-model="trendLineScope" class="trend-select" :disabled="!trendLineEnabled" @change="renderSurfaceCharts">
+            <el-option label="总体趋势线" value="overall" />
+            <el-option label="逐测点趋势线" value="per_point" />
+          </el-select>
+          <span class="trend-hint">{{ trendLineDescription }}</span>
+        </div>
+
         <el-empty v-if="!loading && emptyMessage" :description="emptyMessage" :image-size="88" />
 
         <template v-else>
@@ -240,6 +262,23 @@ const processingMethod = ref('raw')
 const processingWindow = ref(3)
 const processingAlpha = ref(0.3)
 const processingTargetPoints = ref(120)
+const trendLineEnabled = ref(false)
+const trendLineMethod = ref('linear')
+const trendLineScope = ref('overall')
+
+const trendLineCaption = computed(() => {
+  if (!trendLineEnabled.value) return '未显示趋势线'
+  const method = trendLineMethod.value === 'quadratic' ? '二次趋势' : '线性趋势'
+  const scope = trendLineScope.value === 'per_point' ? '逐测点' : '总体'
+  return `${scope}${method}`
+})
+
+const trendLineDescription = computed(() => {
+  if (!trendLineEnabled.value) return '打开后可叠加科研图常用趋势线'
+  if (trendLineMethod.value === 'quadratic') return '二次趋势用于观察非线性加速或回稳迹象'
+  return '线性趋势用于判断监测期内整体增减方向'
+})
+
 const deepPoints = ref([])
 const selectedDeepPointId = ref('')
 const deepProfile = ref(null)
@@ -652,6 +691,70 @@ function applySurfaceProcessing(dates, values) {
   })
 }
 
+function solveLinearSystem(matrix, vector) {
+  const size = vector.length
+  const rows = matrix.map((row, index) => [...row, vector[index]])
+  for (let pivot = 0; pivot < size; pivot += 1) {
+    let best = pivot
+    for (let row = pivot + 1; row < size; row += 1) {
+      if (Math.abs(rows[row][pivot]) > Math.abs(rows[best][pivot])) best = row
+    }
+    if (Math.abs(rows[best][pivot]) < 1e-12) return null
+    if (best !== pivot) [rows[pivot], rows[best]] = [rows[best], rows[pivot]]
+    const divisor = rows[pivot][pivot]
+    for (let column = pivot; column <= size; column += 1) rows[pivot][column] /= divisor
+    for (let row = 0; row < size; row += 1) {
+      if (row === pivot) continue
+      const factor = rows[row][pivot]
+      for (let column = pivot; column <= size; column += 1) rows[row][column] -= factor * rows[pivot][column]
+    }
+  }
+  return rows.map(row => row[size])
+}
+
+function fitTrendModel(points, method = 'linear') {
+  const degree = method === 'quadratic' ? 2 : 1
+  if (points.length < degree + 1) return null
+  const x0 = points[0].x
+  const normalized = points.map(point => ({ x: point.x - x0, y: point.y }))
+  const matrix = Array.from({ length: degree + 1 }, () => Array(degree + 1).fill(0))
+  const vector = Array(degree + 1).fill(0)
+  normalized.forEach(point => {
+    const powers = Array.from({ length: degree * 2 + 1 }, (_, index) => point.x ** index)
+    for (let row = 0; row <= degree; row += 1) {
+      for (let column = 0; column <= degree; column += 1) matrix[row][column] += powers[row + column]
+      vector[row] += point.y * powers[row]
+    }
+  })
+  const coefficients = solveLinearSystem(matrix, vector)
+  if (!coefficients) return null
+  return x => coefficients.reduce((sum, coefficient, index) => sum + coefficient * ((x - x0) ** index), 0)
+}
+
+function buildTrendLineData(dates, values) {
+  const points = dates
+    .map((date, index) => ({ x: dateSerial(date), y: Number(values[index]) }))
+    .filter(point => Number.isFinite(point.x) && Number.isFinite(point.y))
+    .sort((a, b) => a.x - b.x)
+  const model = fitTrendModel(points, trendLineMethod.value)
+  if (!model) return []
+  const firstX = points[0].x
+  const lastX = points.at(-1).x
+  return dates.map(date => {
+    const x = dateSerial(date)
+    if (!Number.isFinite(x) || x < firstX || x > lastX) return null
+    return Number(model(x).toFixed(6))
+  })
+}
+
+function buildOverallTrendValues(dates, seriesData) {
+  return dates.map((_, index) => {
+    const values = seriesData.map(item => Number(item.data[index])).filter(Number.isFinite)
+    if (!values.length) return null
+    return values.reduce((sum, value) => sum + value, 0) / values.length
+  })
+}
+
 function normalizeProcessingWindow(value) {
   let window = Math.max(3, Math.round(Number(value) || 3))
   if (window % 2 === 0) window += 1
@@ -735,7 +838,7 @@ function getLegendLayout(seriesCount, reportMode) {
 
 function buildSurfaceSeries({ reportMode = false } = {}) {
   const { dates, groups } = groupSurfaceRows()
-  return Object.entries(groups).map(([name, values], index) => {
+  const baseSeries = Object.entries(groups).map(([name, values], index) => {
     const data = applySurfaceProcessing(dates, getSurfaceModeValues(dates, values))
     const visual = getSeriesVisual(index)
     return {
@@ -768,6 +871,60 @@ function buildSurfaceSeries({ reportMode = false } = {}) {
       } : {}),
     }
   })
+
+  if (!trendLineEnabled.value || !baseSeries.length) return baseSeries
+
+  if (trendLineScope.value === 'overall') {
+    const trendData = buildTrendLineData(dates, buildOverallTrendValues(dates, baseSeries))
+    if (!trendData.length) return baseSeries
+    return [
+      ...baseSeries,
+      {
+        name: trendLineCaption.value,
+        type: 'line',
+        smooth: false,
+        connectNulls: true,
+        showSymbol: false,
+        silent: true,
+        z: 6,
+        data: trendData,
+        lineStyle: {
+          color: '#111827',
+          width: reportMode ? 3 : 2.4,
+          type: 'dashed',
+          opacity: 0.9,
+        },
+        emphasis: { disabled: true },
+      },
+    ]
+  }
+
+  const trendSeries = baseSeries
+    .map((item, index) => {
+      const trendData = buildTrendLineData(dates, item.data)
+      if (!trendData.length) return null
+      const visual = getSeriesVisual(index)
+      return {
+        name: `${item.name} 趋势`,
+        type: 'line',
+        smooth: false,
+        connectNulls: true,
+        showSymbol: false,
+        silent: true,
+        z: 5,
+        data: trendData,
+        lineStyle: {
+          color: visual.color,
+          width: reportMode ? 2.2 : 1.9,
+          type: 'dashed',
+          opacity: 0.72,
+        },
+        emphasis: { disabled: true },
+      }
+    })
+    .filter(Boolean)
+
+  return [...baseSeries, ...trendSeries]
 }
 
 function buildSurfaceOption({ reportMode = false } = {}) {
@@ -982,7 +1139,7 @@ function getActiveChartKind() {
 }
 
 function getChartSeriesCount(kind) {
-  if (kind === 'surface') return Object.keys(groupSurfaceRows().groups).length
+  if (kind === 'surface') return buildSurfaceSeries({ reportMode: true }).length
   return deepProfile.value?.surveys?.length || 0
 }
 
@@ -1071,6 +1228,12 @@ function saveActiveChartMaterial() {
       alpha: processingAlpha.value,
       targetPoints: processingTargetPoints.value,
     },
+    trendLine: {
+      enabled: trendLineEnabled.value,
+      method: trendLineMethod.value,
+      scope: trendLineScope.value,
+      label: trendLineCaption.value,
+    },
     imageUrl,
     createdAt: new Date().toISOString(),
   })
@@ -1136,6 +1299,34 @@ onBeforeUnmount(() => {
   background: #f5f8fa;
   border: 1px solid #d8e0e5;
   border-left: 3px solid var(--academic-blue);
+}
+
+.trend-bar {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 12px;
+  margin: -4px 0 10px;
+  background: #fbfcfd;
+  border: 1px solid #dce3e8;
+  border-left: 3px solid #7a8691;
+}
+
+.trend-bar.active {
+  border-left-color: #111827;
+  background: #f8fafb;
+}
+
+.trend-select {
+  width: 150px;
+}
+
+.trend-hint {
+  margin-left: auto;
+  color: #66737d;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .processing-label {
