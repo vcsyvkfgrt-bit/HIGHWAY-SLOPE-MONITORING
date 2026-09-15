@@ -20,7 +20,7 @@ const upload = multer({
 })
 
 // 与前端和监测点管理模块口径一致
-const ALLOWED_POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔', '位移计', '测斜仪', '雨量计']
+const ALLOWED_POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔', '位移计', '测斜仪', '雨量计', '裂缝观测点', '锚索应力计', '锚索应力监测点']
 const VALUE_RANGE_BY_TYPE = {
   '地表位移监测点': [-10000000, 10000000],
   '沉降监测点': [-10000000, 10000000],
@@ -28,6 +28,9 @@ const VALUE_RANGE_BY_TYPE = {
   '位移计': [-10000000, 10000000],
   '测斜仪': [-10000000, 10000000],
   '雨量计': [0, 10000000],
+  '裂缝观测点': [-10000000, 10000000],
+  '锚索应力计': [-10000000, 10000000],
+  '锚索应力监测点': [-10000000, 10000000],
 }
 
 function normalizeMonitorDate(input) {
@@ -609,7 +612,7 @@ async function buildMatrixPreview({ slopeId, pointType, rows, pointId = null, co
   }
 }
 
-const VIEW_POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔']
+const VIEW_POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔', '裂缝观测点', '锚索应力计', '锚索应力监测点']
 const SHARED_SURFACE_TYPES = new Set(['地表位移监测点', '沉降监测点', 'surface'])
 
 function viewDate(value = new Date()) {
@@ -870,6 +873,147 @@ router.get('/overview', async (req, res) => {
   } catch (error) {
     console.error('获取数据查看概况失败:', error)
     res.status(500).json({ success: false, message: '获取数据查看概况失败' })
+  }
+})
+
+// 基于已录入观测日期计算实际监测频率。频率定义为：同一测点相邻两次有效观测日期的平均间隔（天）。
+// 深部测斜孔使用 inclinometer_surveys，其余监测类型使用 monitoring_data；后续新增类型只要落入通用表即可自动纳入。
+router.get('/overview/frequency', async (req, res) => {
+  try {
+    const cutoff = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.cutoff || ''))
+      ? String(req.query.cutoff)
+      : viewDate()
+    const slopeId = Number(req.query.slope_id) || null
+    const section = String(req.query.section || '').trim()
+    const pointType = String(req.query.point_type || '').trim()
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from || '')) ? String(req.query.from) : ''
+
+    const normalConditions = ['m.monitor_date <= ?']
+    const normalParams = [cutoff]
+    const deepConditions = ['s.survey_date <= ?']
+    const deepParams = [cutoff]
+    if (from) {
+      normalConditions.push('m.monitor_date >= ?')
+      normalParams.push(from)
+      deepConditions.push('s.survey_date >= ?')
+      deepParams.push(from)
+    }
+    if (slopeId) {
+      normalConditions.push('p.slope_id = ?')
+      normalParams.push(slopeId)
+      deepConditions.push('p.slope_id = ?')
+      deepParams.push(slopeId)
+    }
+    if (section) {
+      normalConditions.push('sl.section = ?')
+      normalParams.push(section)
+      deepConditions.push('sl.section = ?')
+      deepParams.push(section)
+    }
+    if (pointType && pointType !== '深部位移测斜孔') {
+      normalConditions.push('p.point_type = ?')
+      normalParams.push(pointType)
+    }
+    const normalSql = `
+      SELECT p.id AS point_id, p.point_type, p.slope_id, DATE(m.monitor_date) AS monitor_day
+      FROM monitoring_data m
+      JOIN monitoring_points p ON p.id = m.point_id
+      JOIN slopes sl ON sl.id = p.slope_id
+      WHERE p.archived = 0 AND ${normalConditions.join(' AND ')}
+        ${pointType === '深部位移测斜孔' ? 'AND 1 = 0' : ''}
+    `
+    const deepSql = `
+      SELECT p.id AS point_id, '深部位移测斜孔' AS point_type, p.slope_id, DATE(s.survey_date) AS monitor_day
+      FROM inclinometer_surveys s
+      JOIN monitoring_points p ON p.id = s.point_id
+      JOIN slopes sl ON sl.id = p.slope_id
+      WHERE p.archived = 0 AND ${deepConditions.join(' AND ')}
+        ${pointType && pointType !== '深部位移测斜孔' ? 'AND 1 = 0' : ''}
+    `
+    const [rows] = await pool.query(
+      `WITH all_dates AS (
+         ${normalSql}
+         UNION ALL
+         ${deepSql}
+       ), unique_dates AS (
+         SELECT DISTINCT point_id, point_type, slope_id, monitor_day FROM all_dates
+       ), ordered_dates AS (
+         SELECT *, LAG(monitor_day) OVER (PARTITION BY point_id ORDER BY monitor_day) AS previous_day
+         FROM unique_dates
+       ), point_stats AS (
+         SELECT point_id, point_type, slope_id, COUNT(*) AS date_count,
+                MIN(monitor_day) AS first_date, MAX(monitor_day) AS latest_date,
+                AVG(CASE WHEN previous_day IS NULL THEN NULL ELSE DATEDIFF(monitor_day, previous_day) END) AS interval_days
+         FROM ordered_dates GROUP BY point_id, point_type, slope_id
+       )
+       SELECT slope_id, point_type, COUNT(*) AS point_count, SUM(date_count) AS observation_days,
+              AVG(date_count) AS observations_per_point, AVG(interval_days) AS avg_interval_days,
+              DATE_FORMAT(MIN(first_date), '%Y-%m-%d') AS first_date, DATE_FORMAT(MAX(latest_date), '%Y-%m-%d') AS latest_date,
+              SUM(CASE WHEN interval_days IS NOT NULL THEN 1 ELSE 0 END) AS points_with_interval
+       FROM point_stats GROUP BY slope_id, point_type ORDER BY slope_id, point_type`, [...normalParams, ...deepParams]
+    )
+    const total = rows.reduce((acc, row) => {
+      acc.point_count += Number(row.point_count) || 0
+      acc.observation_days += Number(row.observation_days) || 0
+      acc.interval_weight += (Number(row.avg_interval_days) || 0) * (Number(row.points_with_interval) || 0)
+      acc.interval_points += Number(row.points_with_interval) || 0
+      return acc
+    }, { point_count: 0, observation_days: 0, interval_weight: 0, interval_points: 0 })
+    const normalizeFrequencyRow = (row) => ({
+      slope_id: row.slope_id ? Number(row.slope_id) : null,
+      point_type: row.point_type,
+      point_count: Number(row.point_count) || 0,
+      observation_days: Number(row.observation_days) || 0,
+      observations_per_point: Number(row.observations_per_point) || 0,
+      avg_interval_days: row.avg_interval_days === null ? null : Number(row.avg_interval_days),
+      first_date: row.first_date || null,
+      latest_date: row.latest_date || null,
+      points_with_interval: Number(row.points_with_interval) || 0,
+    })
+    const bySlopeMap = new Map()
+    const byTypeMap = new Map()
+    rows.forEach((row) => {
+      const normalized = normalizeFrequencyRow(row)
+      const slopeKey = String(normalized.slope_id)
+      if (!bySlopeMap.has(slopeKey)) bySlopeMap.set(slopeKey, [])
+      bySlopeMap.get(slopeKey).push(normalized)
+      if (!byTypeMap.has(normalized.point_type)) byTypeMap.set(normalized.point_type, [])
+      byTypeMap.get(normalized.point_type).push(normalized)
+    })
+    const mergeFrequencyRows = (items, extra = {}) => {
+      const pointCount = items.reduce((sum, item) => sum + item.point_count, 0)
+      const observationDays = items.reduce((sum, item) => sum + item.observation_days, 0)
+      const intervalPoints = items.reduce((sum, item) => sum + item.points_with_interval, 0)
+      const intervalWeight = items.reduce((sum, item) => sum + (item.avg_interval_days || 0) * item.points_with_interval, 0)
+      return {
+        ...extra,
+        point_count: pointCount,
+        observation_days: observationDays,
+        observations_per_point: pointCount ? observationDays / pointCount : 0,
+        avg_interval_days: intervalPoints ? intervalWeight / intervalPoints : null,
+        first_date: items.map((item) => item.first_date).filter(Boolean).sort()[0] || null,
+        latest_date: items.map((item) => item.latest_date).filter(Boolean).sort().at(-1) || null,
+        points_with_interval: intervalPoints,
+      }
+    }
+    const byType = [...byTypeMap.entries()].map(([type, items]) => mergeFrequencyRows(items, { point_type: type }))
+    const bySlope = [...bySlopeMap.entries()].map(([slopeKey, items]) => mergeFrequencyRows(items, { slope_id: Number(slopeKey) }))
+    res.json({ success: true, data: {
+      cutoff,
+      from: from || null,
+      definition: '同一测点相邻两次有效观测日期的平均间隔；无两期数据的测点不参与间隔计算',
+      summary: {
+        point_count: total.point_count,
+        observation_days: total.observation_days,
+        avg_interval_days: total.interval_points ? total.interval_weight / total.interval_points : null,
+        observations_per_point: total.point_count ? total.observation_days / total.point_count : 0,
+      },
+      by_type: byType,
+      by_slope: bySlope,
+    } })
+  } catch (error) {
+    console.error('平均监测频率统计失败:', error)
+    res.status(500).json({ success: false, message: '平均监测频率统计失败' })
   }
 })
 
@@ -1470,8 +1614,7 @@ router.get('/matrix/slope-summary', auth, async (req, res) => {
        JOIN monitoring_points p ON p.id = m.point_id
        WHERE p.slope_id = ? AND p.archived = 0 ${typeFilter}
        GROUP BY p.point_type, DATE_FORMAT(m.monitor_date, '%Y-%m-%d')
-       ORDER BY monitor_date DESC, p.point_type ASC
-       LIMIT 120`,
+       ORDER BY monitor_date DESC, p.point_type ASC`,
       params
     )
 

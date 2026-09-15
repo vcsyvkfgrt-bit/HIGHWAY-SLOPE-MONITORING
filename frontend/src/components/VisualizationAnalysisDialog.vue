@@ -76,6 +76,39 @@
           <el-button :icon="FolderAdd" @click="saveActiveChartMaterial">加入报告素材</el-button>
         </div>
 
+        <div v-if="!isInclinometerMode" class="processing-bar">
+          <div class="processing-label">
+            <strong>曲线处理</strong>
+            <span>仅影响显示与导出</span>
+          </div>
+          <el-select v-model="processingMethod" class="method-select" @change="renderSurfaceCharts">
+            <el-option v-for="method in processingMethods" :key="method.value" :label="method.label" :value="method.value">
+              <span>{{ method.label }}</span>
+              <small class="method-option-note">{{ method.note }}</small>
+            </el-option>
+          </el-select>
+          <label v-if="['moving_average', 'median'].includes(processingMethod)" class="parameter-control">
+            <span>窗口</span>
+            <el-input-number v-model="processingWindow" :min="3" :max="21" :step="2" controls-position="right" @change="normalizeProcessingWindow" />
+            <small>期</small>
+          </label>
+          <label v-else-if="processingMethod === 'exponential'" class="parameter-control alpha-control">
+            <span>平滑系数 α</span>
+            <el-slider v-model="processingAlpha" :min="0.05" :max="1" :step="0.05" :show-tooltip="true" @input="renderSurfaceCharts" />
+          </label>
+          <label v-else-if="processingMethod === 'lttb'" class="parameter-control">
+            <span>目标点数</span>
+            <el-input-number v-model="processingTargetPoints" :min="20" :max="1000" :step="20" controls-position="right" @change="renderSurfaceCharts" />
+          </label>
+          <div class="processing-result" :class="{ active: processingMethod !== 'raw' }">
+            <span>{{ processingSummary }}</span>
+            <el-tooltip placement="bottom" :content="processingDescription">
+              <button aria-label="查看处理方法说明">?</button>
+            </el-tooltip>
+          </div>
+          <el-button v-if="processingMethod !== 'raw'" text @click="resetProcessing">恢复原始曲线</el-button>
+        </div>
+
         <el-empty v-if="!loading && emptyMessage" :description="emptyMessage" :image-size="88" />
 
         <template v-else>
@@ -85,7 +118,7 @@
                 <span>累积位移曲线</span>
                 <div class="chart-title-actions">
                   <span>固定横轴 -40 ~ 40mm，预警线 ±20mm</span>
-                  <el-button size="small" plain :icon="Download" @click="exportChartImage(deepCumulativeChart, '累积位移曲线')">
+                  <el-button size="small" plain :icon="Download" @click="exportChartImage('deep-cumulative', '累积位移曲线')">
                     导出
                   </el-button>
                 </div>
@@ -97,7 +130,7 @@
                 <span>相对位移曲线</span>
                 <div class="chart-title-actions">
                   <span>固定横轴 -40 ~ 40mm，预警线 ±20mm</span>
-                  <el-button size="small" plain :icon="Download" @click="exportChartImage(deepRelativeChart, '相对位移曲线')">
+                  <el-button size="small" plain :icon="Download" @click="exportChartImage('deep-relative', '相对位移曲线')">
                     导出
                   </el-button>
                 </div>
@@ -109,7 +142,7 @@
           <div v-else class="chart-panel chart-panel-large">
             <div class="chart-title">
               <span>{{ activeSurfaceChartTitle }}</span>
-              <span>预警参考值：20mm</span>
+              <span>{{ thresholdCaption }}</span>
             </div>
             <div ref="surfaceChartRef" class="analysis-chart large"></div>
           </div>
@@ -128,10 +161,10 @@
               <el-statistic title="数据期数" :value="analysisStats.periodCount" />
             </el-col>
             <el-col :span="12">
-              <el-statistic title="最大值" :value="analysisStats.maxAbs" :precision="2" suffix="mm" />
+              <el-statistic :title="primaryMetricTitle" :value="analysisStats.maxAbs" :precision="3" :suffix="currentChartUnit" />
             </el-col>
             <el-col :span="12">
-              <el-statistic title="最大变化" :value="analysisStats.maxChange" :precision="2" suffix="mm" />
+              <el-statistic :title="secondaryMetricTitle" :value="analysisStats.maxChange" :precision="3" :suffix="currentChartUnit" />
             </el-col>
           </el-row>
 
@@ -169,6 +202,8 @@ import { Download, FolderAdd, RefreshRight } from '@element-plus/icons-vue'
 import * as echarts from 'echarts'
 import { API_DATA } from '../config/api'
 import { dataRequest } from '../utils/request'
+import { ACADEMIC_COLORS, MEETING_CHART_EXPORT } from '../utils/academicChart'
+import { countFiniteValues, processTimeSeries } from '../utils/timeSeriesProcessing'
 
 const props = defineProps({
   modelValue: {
@@ -188,12 +223,23 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue'])
 
 const warningThreshold = 20
+const rateWarningThreshold = 2
 const fixedAxisRange = 40
+const academicPalette = ACADEMIC_COLORS
+const academicSymbols = ['circle', 'rect', 'triangle', 'diamond', 'emptyCircle', 'emptyRect', 'emptyTriangle', 'emptyDiamond', 'roundRect', 'emptyRoundRect']
+const academicLineTypes = ['solid', 'dashed', 'dotted']
+const academicFontFamily = '"Times New Roman", "SimSun", "宋体", serif'
+const meetingExportWidth = MEETING_CHART_EXPORT.width
+const meetingExportPixelRatio = MEETING_CHART_EXPORT.pixelRatio
 const loading = ref(false)
 const pointKeyword = ref('')
 const surfaceRows = ref([])
 const selectedSurfacePointIds = ref([])
 const surfaceChartMode = ref('history')
+const processingMethod = ref('raw')
+const processingWindow = ref(3)
+const processingAlpha = ref(0.3)
+const processingTargetPoints = ref(120)
 const deepPoints = ref([])
 const selectedDeepPointId = ref('')
 const deepProfile = ref(null)
@@ -209,10 +255,67 @@ const surfaceChartModes = [
   { label: '单测点历时', value: 'history' },
   { label: '多测点对比', value: 'comparison' },
   { label: '累计变化', value: 'cumulative' },
+  { label: '变化速率', value: 'rate' },
 ]
+
+const processingMethods = [
+  { label: '原始数据', value: 'raw', note: '不做处理' },
+  { label: '移动平均', value: 'moving_average', note: '观察中短期趋势' },
+  { label: '指数平滑', value: 'exponential', note: '近期数据权重更高' },
+  { label: '中值滤波', value: 'median', note: '抑制孤立毛刺' },
+  { label: 'LTTB 曲线简化', value: 'lttb', note: '长序列保留主要形态' },
+]
+
+const processingMethodLabel = computed(() => processingMethods.find(item => item.value === processingMethod.value)?.label || '原始数据')
+const processingDescription = computed(() => ({
+  raw: '直接展示数据库中的有效观测值。',
+  moving_average: `采用 ${processingWindow.value} 期居中移动平均；端点按实际可用数据计算。`,
+  exponential: `采用一次指数平滑，α=${processingAlpha.value.toFixed(2)}；α 越大越贴近近期观测。`,
+  median: `采用 ${processingWindow.value} 期居中中值滤波，主要用于抑制单个孤立毛刺。`,
+  lttb: `使用 LTTB 算法将每条长序列简化至最多 ${processingTargetPoints.value} 个点，保留首尾点和主要转折。`,
+}[processingMethod.value]))
+const processingCaption = computed(() => ({
+  raw: '原始数据',
+  moving_average: `${processingWindow.value}期移动平均`,
+  exponential: `指数平滑 α=${processingAlpha.value.toFixed(2)}`,
+  median: `${processingWindow.value}期中值滤波`,
+  lttb: `LTTB≤${processingTargetPoints.value}点/测点`,
+}[processingMethod.value]))
+
+const processingSummary = computed(() => {
+  const { dates, groups } = groupSurfaceRows()
+  let rawCount = 0
+  let displayedCount = 0
+  Object.values(groups).forEach(values => {
+    const modeValues = getSurfaceModeValues(dates, values)
+    rawCount += countFiniteValues(modeValues)
+    displayedCount += countFiniteValues(applySurfaceProcessing(dates, modeValues))
+  })
+  return processingMethod.value === 'raw' ? `${rawCount} 个有效观测值` : `${rawCount} 个原始点 → ${displayedCount} 个显示点`
+})
 
 const isInclinometerMode = computed(() => props.filter?.monitoringType === '深部位移测斜孔')
 const currentMonitoringType = computed(() => props.filter?.monitoringType || '全部类型')
+const currentChartUnit = computed(() => {
+  if (isInclinometerMode.value) return 'mm'
+  const unit = getSurfaceUnit()
+  return surfaceChartMode.value === 'rate' ? `${unit}/d` : unit
+})
+const activeWarningThreshold = computed(() => {
+  if (isInclinometerMode.value) return warningThreshold
+  if (surfaceChartMode.value === 'rate') {
+    return getSurfaceUnit().toLowerCase() === 'mm' ? rateWarningThreshold : null
+  }
+  return ['地表位移监测点', '沉降监测点'].includes(currentMonitoringType.value)
+    ? warningThreshold
+    : null
+})
+const thresholdCaption = computed(() => activeWarningThreshold.value === null
+  ? (surfaceChartMode.value === 'rate' ? '当前量纲暂未配置变化速率参考值' : '当前类型未配置统一预警参考值')
+  : `预警参考值：±${activeWarningThreshold.value} ${currentChartUnit.value}`
+)
+const primaryMetricTitle = computed(() => surfaceChartMode.value === 'rate' && !isInclinometerMode.value ? '最大变化速率' : '最大值')
+const secondaryMetricTitle = computed(() => surfaceChartMode.value === 'rate' && !isInclinometerMode.value ? '平均变化速率' : '最大变化')
 const currentSlopeName = computed(() => {
   const slope = props.slopes.find(item => String(item.id) === String(props.filter?.slopeId))
   return slope?.slope_name || '全部边坡'
@@ -220,6 +323,17 @@ const currentSlopeName = computed(() => {
 const dateRangeText = computed(() => {
   const range = props.filter?.dateRange || []
   return range.length === 2 ? `${range[0]} 至 ${range[1]}` : '全部日期'
+})
+
+const chartDataRangeText = computed(() => {
+  if (isInclinometerMode.value) {
+    const dates = (deepProfile.value?.surveys || []).map(item => String(item.survey_date || '').slice(0, 10)).filter(Boolean).sort()
+    if (!dates.length) return dateRangeText.value
+    return dates[0] === dates.at(-1) ? dates[0] : `${dates[0]} 至 ${dates.at(-1)}`
+  }
+  const dates = selectedSurfaceRows.value.map(item => item.monitorDate).filter(Boolean).sort()
+  if (!dates.length) return dateRangeText.value
+  return dates[0] === dates.at(-1) ? dates[0] : `${dates[0]} 至 ${dates.at(-1)}`
 })
 
 const surfacePoints = computed(() => {
@@ -272,8 +386,10 @@ const activeSurfaceChartTitle = computed(() => {
     history: '单测点历时曲线',
     comparison: '多测点对比曲线',
     cumulative: '累计变化趋势',
+    rate: '变化速率曲线',
   }
-  return titleMap[surfaceChartMode.value] || '监测曲线'
+  const baseTitle = titleMap[surfaceChartMode.value] || '监测曲线'
+  return processingMethod.value === 'raw' ? baseTitle : `${baseTitle}（${processingMethodLabel.value}）`
 })
 
 const analysisStats = computed(() => {
@@ -292,6 +408,15 @@ const analysisStats = computed(() => {
   }
 
   const rows = selectedSurfaceRows.value
+  if (surfaceChartMode.value === 'rate') {
+    const rates = getAllSurfaceRates().map(value => Math.abs(value))
+    return {
+      pointCount: selectedSurfacePointIds.value.length,
+      periodCount: new Set(rows.map(row => row.monitorDate)).size,
+      maxAbs: rates.length ? Math.max(...rates) : 0,
+      maxChange: rates.length ? rates.reduce((sum, value) => sum + value, 0) / rates.length : 0,
+    }
+  }
   const values = rows.map(row => Math.abs(Number(row.value) || 0))
   const rowsByPoint = new Map()
   rows.forEach((row) => {
@@ -314,8 +439,15 @@ const analysisStats = computed(() => {
 })
 
 const judgement = computed(() => {
+  if (activeWarningThreshold.value === null) {
+    return {
+      type: 'info',
+      title: '当前类型未配置统一判据',
+      description: '图表仅反映实测变化，不自动给出超限结论；请结合设计控制值、仪器量程和现场工况进行判断。',
+    }
+  }
   const maxValue = analysisStats.value.maxAbs
-  const ratio = maxValue / warningThreshold
+  const ratio = maxValue / activeWarningThreshold.value
   if (ratio >= 1) {
     return {
       type: 'error',
@@ -333,7 +465,7 @@ const judgement = computed(() => {
   return {
     type: 'success',
     title: '总体处于正常范围',
-    description: '当前最大变形未达到 20mm 预警参考值，可按常规频率持续监测。',
+    description: `当前${surfaceChartMode.value === 'rate' && !isInclinometerMode.value ? '最大变化速率' : '最大变形'}未达到 ±${activeWarningThreshold.value}${currentChartUnit.value} 预警参考值，可按常规频率持续监测。`,
   }
 })
 
@@ -345,7 +477,20 @@ const analysisNotes = computed(() => {
       '重点观察曲线在某一深度段是否连续偏移或突变。',
     ]
   }
+  const processingNotes = processingMethod.value === 'raw' ? [] : [
+    `${processingDescription.value} 处理结果仅用于识别趋势和简化展示，不替代原始观测值。`,
+    '预警参考线和右侧判断指标始终基于原始数据计算，避免平滑处理掩盖异常。',
+  ]
+  if (surfaceChartMode.value === 'rate') {
+    return [
+      ...processingNotes,
+      '变化速率按同一测点相邻两次有效观测值之差除以实际间隔天数计算，正负号表示变化方向。',
+      '毫米量纲数据暂按 ±2mm/d 作为变化速率参考值，红色虚线表示正、负参考边界。',
+      '速率突增时应先复核观测日期、原始读数和现场工况，再判断是否需要提高监测频率。',
+    ]
+  }
   return [
+    ...processingNotes,
     '单测点历时曲线适合看某个测点随时间的发展趋势。',
     '多测点对比曲线适合判断同一边坡不同测点是否同步变化。',
     '累计变化趋势以首期数据为零点，适合报告中说明本期累计变形。',
@@ -462,43 +607,241 @@ function groupSurfaceRows() {
   return { dates, groups }
 }
 
-function buildSurfaceSeries() {
+function dateSerial(dateText) {
+  const [year, month, day] = String(dateText || '').slice(0, 10).split('-').map(Number)
+  if (!year || !month || !day) return null
+  return Date.UTC(year, month - 1, day) / 86400000
+}
+
+function buildRateMap(dates, values) {
+  const observations = dates
+    .filter(date => Number.isFinite(values[date]) && dateSerial(date) !== null)
+    .map(date => ({ date, serial: dateSerial(date), value: Number(values[date]) }))
+    .sort((a, b) => a.serial - b.serial)
+  const rateMap = {}
+  for (let index = 1; index < observations.length; index += 1) {
+    const previous = observations[index - 1]
+    const current = observations[index]
+    const elapsedDays = current.serial - previous.serial
+    if (elapsedDays <= 0) continue
+    rateMap[current.date] = Number(((current.value - previous.value) / elapsedDays).toFixed(6))
+  }
+  return rateMap
+}
+
+function getSurfaceModeValues(dates, values) {
+  const raw = dates.map(date => values[date] ?? null)
+  const firstValue = raw.find(value => Number.isFinite(value)) ?? 0
+  if (surfaceChartMode.value === 'cumulative') {
+    return raw.map(value => Number.isFinite(value) ? Number((value - firstValue).toFixed(6)) : null)
+  }
+  if (surfaceChartMode.value === 'rate') {
+    const rateMap = buildRateMap(dates, values)
+    return dates.map(date => rateMap[date] ?? null)
+  }
+  return raw
+}
+
+function applySurfaceProcessing(dates, values) {
+  return processTimeSeries(values, {
+    method: processingMethod.value,
+    windowSize: processingWindow.value,
+    alpha: processingAlpha.value,
+    targetPoints: processingTargetPoints.value,
+    xValues: dates.map(date => dateSerial(date)),
+  })
+}
+
+function normalizeProcessingWindow(value) {
+  let window = Math.max(3, Math.round(Number(value) || 3))
+  if (window % 2 === 0) window += 1
+  processingWindow.value = Math.min(window, 21)
+  renderSurfaceCharts()
+}
+
+function resetProcessing() {
+  processingMethod.value = 'raw'
+  renderSurfaceCharts()
+}
+
+function getAllSurfaceRates() {
   const { dates, groups } = groupSurfaceRows()
-  return Object.entries(groups).map(([name, values]) => {
-    const raw = dates.map(date => values[date] ?? null)
-    const firstValue = raw.find(value => Number.isFinite(value)) ?? 0
-    const data = surfaceChartMode.value === 'cumulative'
-      ? raw.map(value => Number.isFinite(value) ? Number((value - firstValue).toFixed(3)) : null)
-      : raw
+  return Object.values(groups).flatMap(values => Object.values(buildRateMap(dates, values)))
+}
+
+function getSeriesVisual(index) {
+  return {
+    color: academicPalette[index % academicPalette.length],
+    symbol: academicSymbols[index % academicSymbols.length],
+    lineType: academicLineTypes[Math.floor(index / academicPalette.length) % academicLineTypes.length],
+  }
+}
+
+function getSurfaceUnit() {
+  return selectedSurfaceRows.value.find(row => row.unit)?.unit || 'mm'
+}
+
+function wrapLegendName(name, limit = 18) {
+  const text = String(name || '')
+  if (text.length <= limit) return text
+  if (text.length <= limit * 2) return `${text.slice(0, limit)}\n${text.slice(limit)}`
+  return `${text.slice(0, limit)}\n${text.slice(limit, limit * 2 - 1)}…`
+}
+
+function getLegendLayout(seriesCount, reportMode) {
+  if (!reportMode) {
+    return {
+      legend: {
+        type: 'scroll',
+        bottom: 4,
+        left: 28,
+        right: 28,
+        pageIconColor: '#1f4e79',
+        pageTextStyle: { color: '#5a6470', fontFamily: academicFontFamily, fontSize: 11 },
+        itemWidth: 26,
+        itemHeight: 9,
+        itemGap: 16,
+        textStyle: { color: '#30353b', fontFamily: academicFontFamily, fontSize: 12 },
+      },
+      gridBottom: 82,
+      legendHeight: 28,
+    }
+  }
+  const estimatedRows = Math.max(1, Math.ceil(seriesCount / MEETING_CHART_EXPORT.itemsPerLegendRow))
+  const hasLongLegend = [
+    ...Object.keys(groupSurfaceRows().groups),
+    ...(deepProfile.value?.surveys || []).map(item => item.survey_date),
+  ].some(name => String(name || '').length > 18)
+  const legendHeight = Math.max(54, estimatedRows * (hasLongLegend ? 46 : 34))
+  return {
+    legend: {
+      type: 'plain',
+      orient: 'horizontal',
+      left: 112,
+      right: 112,
+      bottom: 54,
+      height: legendHeight,
+      selectedMode: false,
+      itemWidth: 36,
+      itemHeight: 10,
+      itemGap: 22,
+      formatter: name => wrapLegendName(name),
+      textStyle: { color: '#202327', fontFamily: academicFontFamily, fontSize: 16, lineHeight: 20 },
+    },
+    gridBottom: legendHeight + 112,
+    legendHeight,
+  }
+}
+
+function buildSurfaceSeries({ reportMode = false } = {}) {
+  const { dates, groups } = groupSurfaceRows()
+  return Object.entries(groups).map(([name, values], index) => {
+    const data = applySurfaceProcessing(dates, getSurfaceModeValues(dates, values))
+    const visual = getSeriesVisual(index)
     return {
       name,
       type: 'line',
       smooth: false,
       connectNulls: true,
-      showSymbol: surfaceChartMode.value === 'history',
+      showSymbol: reportMode || dates.length <= 24,
+      symbol: visual.symbol,
+      symbolSize: reportMode ? 7 : 5,
+      lineStyle: { color: visual.color, width: reportMode ? 2.2 : 1.8, type: visual.lineType },
+      itemStyle: { color: visual.color, borderColor: '#ffffff', borderWidth: 0.8 },
+      emphasis: { focus: 'series', lineStyle: { width: 3 } },
       data,
+      ...(index === 0 && activeWarningThreshold.value !== null ? {
+        markLine: {
+          silent: true,
+          symbol: 'none',
+          label: {
+            show: reportMode,
+            formatter: ({ value }) => `${Number(value) > 0 ? '+' : ''}${value} ${currentChartUnit.value}`,
+            position: 'insideEndTop',
+            color: '#9f2f28',
+            fontFamily: academicFontFamily,
+            fontSize: 13,
+          },
+          lineStyle: { color: '#b33a32', type: 'dashed', width: 1.2 },
+          data: [{ yAxis: -activeWarningThreshold.value }, { yAxis: activeWarningThreshold.value }],
+        },
+      } : {}),
     }
   })
+}
+
+function buildSurfaceOption({ reportMode = false } = {}) {
+  const { dates } = groupSurfaceRows()
+  const series = buildSurfaceSeries({ reportMode })
+  const { legend, gridBottom, legendHeight } = getLegendLayout(series.length, reportMode)
+  const unit = getSurfaceUnit()
+  const displayUnit = surfaceChartMode.value === 'rate' ? `${unit}/d` : unit
+  const exportHeight = Math.max(MEETING_CHART_EXPORT.minHeight, 820 + legendHeight)
+  return {
+    backgroundColor: '#fff',
+    animation: !reportMode,
+    color: academicPalette,
+    title: reportMode ? {
+      text: `${currentSlopeName.value}  ${activeSurfaceChartTitle.value}`,
+      subtext: `${currentMonitoringType.value}    监测时段：${chartDataRangeText.value}    曲线处理：${processingCaption.value}    ${thresholdCaption.value}`,
+      left: 'center',
+      top: 24,
+      itemGap: 12,
+      textStyle: { color: '#171a1d', fontFamily: academicFontFamily, fontSize: 25, fontWeight: 600 },
+      subtextStyle: { color: '#555d66', fontFamily: academicFontFamily, fontSize: 14, fontWeight: 400 },
+    } : undefined,
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      backgroundColor: 'rgba(255,255,255,0.97)',
+      borderColor: '#87919b',
+      borderWidth: 1,
+      textStyle: { color: '#202327', fontFamily: academicFontFamily, fontSize: 12 },
+      valueFormatter: value => value === null || value === undefined ? '-' : `${value} ${displayUnit}`,
+    },
+    legend,
+    grid: {
+      left: reportMode ? 106 : 74,
+      right: reportMode ? 74 : 36,
+      top: reportMode ? 128 : 44,
+      bottom: gridBottom,
+      containLabel: false,
+    },
+    // 来源信息保留在报告材料元数据中，图片本身保持干净。
+    graphic: undefined,
+    xAxis: {
+      type: 'category',
+      name: '监测日期',
+      nameLocation: 'middle',
+      nameGap: reportMode ? 46 : 38,
+      boundaryGap: false,
+      data: dates,
+      axisLine: { lineStyle: { color: '#25292d', width: 1.2 } },
+      axisTick: { alignWithLabel: true, lineStyle: { color: '#25292d' } },
+      axisLabel: { color: '#30353b', fontFamily: academicFontFamily, fontSize: reportMode ? 14 : 11, hideOverlap: true, margin: 12 },
+      nameTextStyle: { color: '#202327', fontFamily: academicFontFamily, fontSize: reportMode ? 16 : 13 },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value',
+      name: `${surfaceChartMode.value === 'cumulative' ? '累计变化' : (surfaceChartMode.value === 'rate' ? '变化速率' : '监测值')}（${displayUnit}）`,
+      nameLocation: 'middle',
+      nameGap: reportMode ? 68 : 52,
+      scale: true,
+      axisLine: { show: true, lineStyle: { color: '#25292d', width: 1.2 } },
+      axisTick: { show: true, lineStyle: { color: '#25292d' } },
+      axisLabel: { color: '#30353b', fontFamily: academicFontFamily, fontSize: reportMode ? 14 : 11, margin: 12 },
+      nameTextStyle: { color: '#202327', fontFamily: academicFontFamily, fontSize: reportMode ? 16 : 13 },
+      splitLine: { show: true, lineStyle: { color: '#cfd4d9', type: 'dashed', width: 0.8 } },
+    },
+    series,
+  }
 }
 
 function renderSurfaceCharts() {
   if (!surfaceChartRef.value || isInclinometerMode.value || !selectedSurfaceRows.value.length) return
   if (!surfaceChart) surfaceChart = echarts.init(surfaceChartRef.value)
-  const { dates } = groupSurfaceRows()
-  const series = buildSurfaceSeries()
-  surfaceChart.setOption({
-    backgroundColor: '#fff',
-    tooltip: { trigger: 'axis' },
-    legend: { type: 'scroll', bottom: 0 },
-    grid: { left: 64, right: 36, top: 48, bottom: 72, containLabel: true },
-    xAxis: { type: 'category', boundaryGap: false, data: dates },
-    yAxis: {
-      type: 'value',
-      name: surfaceChartMode.value === 'cumulative' ? '累计变化(mm)' : '监测值(mm)',
-      splitLine: { show: true },
-    },
-    series,
-  }, true)
+  surfaceChart.setOption(buildSurfaceOption(), true)
 }
 
 function getDepthAxisMax() {
@@ -509,23 +852,38 @@ function getDepthAxisMax() {
   return holeDepth ? Math.ceil(holeDepth / 5) * 5 : undefined
 }
 
-function buildDeepSeries(type) {
-  const series = (deepProfile.value?.surveys || []).map(survey => ({
-    name: survey.survey_date,
-    type: 'line',
-    smooth: false,
-    showSymbol: false,
-    data: (survey.readings || []).map(row => [
-      Number(type === 'cumulative' ? row.cumulative_displacement : row.relative_displacement) || 0,
-      Number(row.depth_m) || 0,
-    ]),
-  }))
+function buildDeepSeries(type, { reportMode = false } = {}) {
+  const series = (deepProfile.value?.surveys || []).map((survey, index) => {
+    const visual = getSeriesVisual(index)
+    return {
+      name: survey.survey_date,
+      type: 'line',
+      smooth: false,
+      showSymbol: reportMode,
+      symbol: visual.symbol,
+      symbolSize: reportMode ? 5 : 4,
+      lineStyle: { color: visual.color, width: reportMode ? 2.1 : 1.7, type: visual.lineType },
+      itemStyle: { color: visual.color },
+      emphasis: { focus: 'series', lineStyle: { width: 3 } },
+      data: (survey.readings || []).map(row => [
+        Number(type === 'cumulative' ? row.cumulative_displacement : row.relative_displacement) || 0,
+        Number(row.depth_m) || 0,
+      ]),
+    }
+  })
 
   if (series.length) {
     series[0].markLine = {
       silent: true,
       symbol: 'none',
-      label: { show: false },
+      label: {
+        show: reportMode,
+        formatter: ({ value }) => Number(value) === 0 ? '0' : `${Number(value) > 0 ? '+' : ''}${value} mm`,
+        position: 'insideEndTop',
+        color: '#8f2d27',
+        fontFamily: academicFontFamily,
+        fontSize: 13,
+      },
       data: [
         { xAxis: -warningThreshold, lineStyle: { color: '#d93026', type: 'dashed' } },
         { xAxis: 0, lineStyle: { color: '#606266', type: 'solid' } },
@@ -536,32 +894,65 @@ function buildDeepSeries(type) {
   return series
 }
 
-function buildDeepOption(type) {
+function buildDeepOption(type, { reportMode = false } = {}) {
+  const series = buildDeepSeries(type, { reportMode })
+  const { legend, gridBottom, legendHeight } = getLegendLayout(series.length, reportMode)
+  const point = deepPoints.value.find(item => String(item.id) === selectedDeepPointId.value)
+  const exportHeight = Math.max(MEETING_CHART_EXPORT.minHeight, 820 + legendHeight)
   return {
     backgroundColor: '#fff',
-    tooltip: { trigger: 'axis', valueFormatter: value => `${value} mm` },
-    legend: { type: 'scroll', bottom: 0 },
-    grid: { left: 72, right: 36, top: 32, bottom: 82, containLabel: true },
+    animation: !reportMode,
+    color: academicPalette,
+    title: reportMode ? {
+      text: `${point?.point_name || '测斜孔'}  ${type === 'cumulative' ? '累积位移曲线' : '相对位移曲线'}`,
+      subtext: `${currentSlopeName.value}    监测时段：${chartDataRangeText.value}    横轴范围：-${fixedAxisRange}～${fixedAxisRange} mm    预警参考值：±${warningThreshold} mm`,
+      left: 'center',
+      top: 24,
+      itemGap: 12,
+      textStyle: { color: '#171a1d', fontFamily: academicFontFamily, fontSize: 25, fontWeight: 600 },
+      subtextStyle: { color: '#555d66', fontFamily: academicFontFamily, fontSize: 14, fontWeight: 400 },
+    } : undefined,
+    tooltip: {
+      trigger: 'axis',
+      confine: true,
+      backgroundColor: 'rgba(255,255,255,0.97)',
+      borderColor: '#87919b',
+      textStyle: { color: '#202327', fontFamily: academicFontFamily, fontSize: 12 },
+      valueFormatter: value => `${value} mm`,
+    },
+    legend,
+    grid: { left: reportMode ? 112 : 78, right: reportMode ? 78 : 36, top: reportMode ? 128 : 36, bottom: gridBottom },
+    graphic: undefined,
     xAxis: {
       type: 'value',
-      name: '位移(mm)',
+      name: '位移（mm）',
       nameLocation: 'middle',
-      nameGap: 34,
+      nameGap: reportMode ? 48 : 38,
       min: -fixedAxisRange,
       max: fixedAxisRange,
       interval: 5,
+      axisLine: { show: true, lineStyle: { color: '#25292d', width: 1.2 } },
+      axisTick: { show: true, lineStyle: { color: '#25292d' } },
+      axisLabel: { color: '#30353b', fontFamily: academicFontFamily, fontSize: reportMode ? 14 : 11, margin: 11 },
+      nameTextStyle: { color: '#202327', fontFamily: academicFontFamily, fontSize: reportMode ? 16 : 13 },
+      splitLine: { show: true, lineStyle: { color: '#cfd4d9', type: 'dashed', width: 0.8 } },
     },
     yAxis: {
       type: 'value',
-      name: '深度(m)',
+      name: '深度（m）',
       nameLocation: 'middle',
-      nameGap: 46,
+      nameGap: reportMode ? 64 : 50,
       nameRotate: 90,
       min: 0,
       max: getDepthAxisMax(),
       inverse: true,
+      axisLine: { show: true, lineStyle: { color: '#25292d', width: 1.2 } },
+      axisTick: { show: true, lineStyle: { color: '#25292d' } },
+      axisLabel: { color: '#30353b', fontFamily: academicFontFamily, fontSize: reportMode ? 14 : 11, margin: 11 },
+      nameTextStyle: { color: '#202327', fontFamily: academicFontFamily, fontSize: reportMode ? 16 : 13 },
+      splitLine: { show: true, lineStyle: { color: '#cfd4d9', type: 'dashed', width: 0.8 } },
     },
-    series: buildDeepSeries(type),
+    series,
   }
 }
 
@@ -586,10 +977,47 @@ function getActiveChartName() {
   return activeSurfaceChartTitle.value
 }
 
+function getActiveChartKind() {
+  return isInclinometerMode.value ? 'deep-cumulative' : 'surface'
+}
+
+function getChartSeriesCount(kind) {
+  if (kind === 'surface') return Object.keys(groupSurfaceRows().groups).length
+  return deepProfile.value?.surveys?.length || 0
+}
+
+function getAcademicChartDataUrl(kind, { pixelRatio = meetingExportPixelRatio } = {}) {
+  const activeChart = kind === 'surface'
+    ? surfaceChart
+    : (kind === 'deep-relative' ? deepRelativeChart : deepCumulativeChart)
+  if (!activeChart) return ''
+
+  const seriesCount = getChartSeriesCount(kind)
+  const legendRows = Math.max(1, Math.ceil(seriesCount / MEETING_CHART_EXPORT.itemsPerLegendRow))
+  const hasLongLegend = kind === 'surface'
+    ? Object.keys(groupSurfaceRows().groups).some(name => String(name || '').length > 18)
+    : (deepProfile.value?.surveys || []).some(item => String(item.survey_date || '').length > 18)
+  const legendHeight = Math.max(54, legendRows * (hasLongLegend ? 46 : 34))
+  const width = meetingExportWidth
+  const height = Math.max(MEETING_CHART_EXPORT.minHeight, 820 + legendHeight)
+  const container = document.createElement('div')
+  container.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:${height}px;background:#fff;`
+  document.body.appendChild(container)
+  const exportChart = echarts.init(container, null, { renderer: 'canvas', width, height })
+  try {
+    const option = kind === 'surface'
+      ? buildSurfaceOption({ reportMode: true })
+      : buildDeepOption(kind === 'deep-relative' ? 'relative' : 'cumulative', { reportMode: true })
+    exportChart.setOption(option, { notMerge: true, lazyUpdate: false })
+    return exportChart.getDataURL({ type: 'png', pixelRatio, backgroundColor: '#ffffff' })
+  } finally {
+    exportChart.dispose()
+    container.remove()
+  }
+}
+
 function getActiveChartDataUrl() {
-  const chart = getActiveChart()
-  if (!chart) return ''
-  return chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' })
+  return getAcademicChartDataUrl(getActiveChartKind(), { pixelRatio: 1 })
 }
 
 function imageDataUrlToBlob(dataUrl) {
@@ -602,14 +1030,11 @@ function imageDataUrlToBlob(dataUrl) {
 }
 
 function exportActiveChart() {
-  exportChartImage(getActiveChart(), getActiveChartName())
+  exportChartImage(getActiveChartKind(), getActiveChartName())
 }
 
-function exportChartImage(chart, chartName) {
-  const imageUrl = getActiveChartDataUrl()
-  const targetImageUrl = chart
-    ? chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' })
-    : imageUrl
+function exportChartImage(kind, chartName) {
+  const targetImageUrl = getAcademicChartDataUrl(kind)
   if (!targetImageUrl) {
     ElMessage.warning('图表尚未生成')
     return
@@ -638,6 +1063,14 @@ function saveActiveChartMaterial() {
     slopeName: currentSlopeName.value,
     monitoringType: currentMonitoringType.value,
     dateRange: dateRangeText.value,
+    processing: {
+      method: processingMethod.value,
+      label: processingMethodLabel.value,
+      description: processingDescription.value,
+      windowSize: processingWindow.value,
+      alpha: processingAlpha.value,
+      targetPoints: processingTargetPoints.value,
+    },
     imageUrl,
     createdAt: new Date().toISOString(),
   })
@@ -670,22 +1103,117 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .analysis-shell {
+  --academic-ink: #20252a;
+  --academic-blue: #1f4e79;
+  --academic-line: #cfd5da;
+  --academic-paper: #ffffff;
   height: calc(100vh - 112px);
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr) 320px;
-  gap: 16px;
-  background: #f5f7fa;
-  padding: 16px;
+  gap: 12px;
+  background: #eef1f3;
+  padding: 12px;
   box-sizing: border-box;
+  color: var(--academic-ink);
 }
 
 .analysis-sidebar,
 .analysis-main,
 .analysis-inspector {
-  background: #fff;
-  border: 1px solid #e4e7ed;
-  border-radius: 4px;
+  background: var(--academic-paper);
+  border: 1px solid var(--academic-line);
+  border-radius: 2px;
   min-height: 0;
+}
+
+.processing-bar {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: #f5f8fa;
+  border: 1px solid #d8e0e5;
+  border-left: 3px solid var(--academic-blue);
+}
+
+.processing-label {
+  min-width: 104px;
+}
+
+.processing-label strong,
+.processing-label span {
+  display: block;
+}
+
+.processing-label strong {
+  font-size: 13px;
+}
+
+.processing-label span {
+  margin-top: 2px;
+  color: #78848d;
+  font-size: 10px;
+}
+
+.method-select {
+  width: 170px;
+}
+
+.method-option-note {
+  float: right;
+  margin-left: 18px;
+  color: #8a959d;
+}
+
+.parameter-control {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #53616b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.parameter-control :deep(.el-input-number) {
+  width: 108px;
+}
+
+.alpha-control {
+  width: 220px;
+}
+
+.alpha-control :deep(.el-slider) {
+  flex: 1;
+}
+
+.processing-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 6px 9px;
+  color: #66737d;
+  font: 12px/1.2 "Times New Roman", "SimSun", serif;
+  border: 1px solid #d8e0e5;
+  background: #fff;
+}
+
+.processing-result.active {
+  color: #1f4e79;
+  border-color: #aabfce;
+}
+
+.processing-result button {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: help;
 }
 
 .analysis-sidebar,
@@ -702,9 +1230,13 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-title {
-  font-size: 15px;
-  font-weight: 600;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
+  padding-bottom: 9px;
+  border-bottom: 2px solid var(--academic-blue);
+  color: #17212a;
+  font-family: "SimSun", "宋体", serif;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .filter-summary {
@@ -732,7 +1264,9 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--academic-line);
   flex-wrap: wrap;
 }
 
@@ -748,9 +1282,10 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid #ebeef5;
-  border-radius: 4px;
-  padding: 12px;
+  border: 1px solid #bfc7ce;
+  border-radius: 1px;
+  padding: 14px;
+  background: #fff;
 }
 
 .chart-panel-large {
@@ -762,7 +1297,12 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 8px;
-  font-weight: 600;
+  padding-bottom: 9px;
+  border-bottom: 1px solid #d9dee2;
+  color: #161a1e;
+  font-family: "SimSun", "宋体", serif;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .chart-title span:last-child {
@@ -818,6 +1358,14 @@ onBeforeUnmount(() => {
 
   .analysis-inspector {
     grid-column: 1 / -1;
+  }
+
+  .processing-bar {
+    flex-wrap: wrap;
+  }
+
+  .processing-result {
+    margin-left: 0;
   }
 }
 </style>

@@ -1,8 +1,24 @@
 const express = require('express')
+const fs = require('fs')
+const os = require('os')
+const path = require('path')
+const multer = require('multer')
 const pool = require('../config/database')
 const auth = require('../middleware/auth')
+const { renderWordTemplate, resolveUploadedTemplate } = require('../utils/wordTemplateRenderer')
+const { convertWordToPdf } = require('../utils/wordPdfPreview')
+const { inspectReportQuality } = require('../utils/reportQuality')
 
 const router = express.Router()
+
+const previewUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 100 * 1024 * 1024, files: 1 },
+  fileFilter(_req, file, callback) {
+    const isDocx = file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || /\.docx$/i.test(file.originalname)
+    callback(isDocx ? null : new Error('PDF 预览仅支持 DOCX 文件'), isDocx)
+  },
+})
 
 router.use(auth)
 
@@ -28,6 +44,44 @@ function normalizeReport(row) {
     content_json: parseJson(row.content_json, {}),
     chart_assets: parseJson(row.chart_assets, []),
   }
+}
+
+async function sendTemplateWord(report, res) {
+  const snapshot = report.template_snapshot || {}
+  const fileAssetId = snapshot.fileAssetId || snapshot.file_asset_id
+  const sourceFormat = snapshot.sourceFormat || snapshot.dataBindings?.__sourceFormat
+
+  if (snapshot.templateKind !== 'word' || sourceFormat === 'pdf' || !fileAssetId) {
+    res.status(409).json({
+      success: false,
+      message: sourceFormat === 'pdf'
+        ? 'PDF 模板用于结构参考，不能保留为可编辑 Word 版式，请选择 DOCX 模板'
+        : '当前报告没有可用于高保真导出的 DOCX 原模板',
+    })
+    return
+  }
+
+  const [[asset]] = await pool.query(
+    'SELECT id, original_name, file_path, mime_type FROM file_assets WHERE id = ? AND module = ?',
+    [fileAssetId, 'document-template']
+  )
+  if (!asset) {
+    res.status(404).json({ success: false, message: 'Word 模板原文件不存在' })
+    return
+  }
+
+  const templatePath = resolveUploadedTemplate(asset.file_path)
+  if (!fs.existsSync(templatePath)) {
+    res.status(404).json({ success: false, message: 'Word 模板原文件已丢失，请重新上传模板' })
+    return
+  }
+
+  const output = await renderWordTemplate(templatePath, report)
+  const safeName = String(report.title || '监测报告').replace(/[\\/:*?"<>|]/g, '_')
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(safeName)}.docx`)
+  res.setHeader('Content-Length', output.length)
+  res.send(Buffer.from(output))
 }
 
 router.get('/', async (req, res) => {
@@ -73,6 +127,70 @@ router.get('/', async (req, res) => {
   }
 })
 
+router.post('/preview-pdf', previewUpload.single('file'), async (req, res) => {
+  let tempDir = null
+  try {
+    if (!req.file?.buffer) return res.status(400).json({ success: false, message: '缺少待预览的 Word 文件' })
+    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'slope-report-preview-'))
+    const inputPath = path.join(tempDir, 'report.docx')
+    const outputPath = path.join(tempDir, 'report.pdf')
+    await fs.promises.writeFile(inputPath, req.file.buffer)
+    await convertWordToPdf(inputPath, outputPath)
+    const pdf = await fs.promises.readFile(outputPath)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', 'inline; filename="report-preview.pdf"')
+    return res.send(pdf)
+  } catch (error) {
+    console.error('生成 PDF 预览失败:', error)
+    const detail = String(error?.stderr || error?.message || '')
+    const message = /ActiveX|COM|Word\.Application|class not registered|Invalid class/i.test(detail)
+      ? '服务器无法调用 Microsoft Word，请安装桌面版 Word 或在服务器配置 PDF 转换服务'
+      : (error?.message || '生成 PDF 预览失败')
+    return res.status(500).json({ success: false, message })
+  } finally {
+    if (tempDir) {
+      const tempRoot = path.resolve(os.tmpdir())
+      const resolved = path.resolve(tempDir)
+      if (path.dirname(resolved) === tempRoot && path.basename(resolved).startsWith('slope-report-preview-')) {
+        await fs.promises.rm(resolved, { recursive: true, force: true }).catch(() => {})
+      }
+    }
+  }
+})
+
+router.post('/quality-preview', (req, res) => {
+  const report = normalizeReport(req.body || {})
+  res.json({ success: true, data: inspectReportQuality(report) })
+})
+
+router.get('/:id/export-word', async (req, res) => {
+  try {
+    const { id } = req.params
+    const [[row]] = await pool.query('SELECT * FROM report_records WHERE id = ?', [id])
+    if (!row) return res.status(404).json({ success: false, message: '报告不存在' })
+
+    const report = normalizeReport(row)
+    return await sendTemplateWord(report, res)
+  } catch (error) {
+    console.error('按 Word 模板导出失败:', error)
+    const errors = Array.isArray(error) ? error : [error]
+    const message = errors.map((item) => item?.message || String(item)).slice(0, 3).join('；')
+    return res.status(400).json({ success: false, message: message || '按 Word 模板导出失败' })
+  }
+})
+
+router.post('/export-word-preview', async (req, res) => {
+  try {
+    const report = normalizeReport(req.body || {})
+    return await sendTemplateWord(report, res)
+  } catch (error) {
+    console.error('按 Word 模板预览导出失败:', error)
+    const errors = Array.isArray(error) ? error : [error]
+    const message = errors.map((item) => item?.message || String(item)).slice(0, 3).join('；')
+    return res.status(400).json({ success: false, message: message || '按 Word 模板预览导出失败' })
+  }
+})
+
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params
@@ -91,6 +209,31 @@ router.get('/:id', async (req, res) => {
   } catch (error) {
     console.error('获取报告详情失败:', error)
     res.status(500).json({ success: false, message: '获取报告详情失败' })
+  }
+})
+
+router.get('/:id/quality', async (req, res) => {
+  try {
+    const [[row]] = await pool.query('SELECT * FROM report_records WHERE id = ?', [req.params.id])
+    if (!row) return res.status(404).json({ success: false, message: '报告不存在' })
+    res.json({ success: true, data: inspectReportQuality(normalizeReport(row)) })
+  } catch (error) {
+    console.error('报告质量检查失败:', error)
+    res.status(500).json({ success: false, message: '报告质量检查失败' })
+  }
+})
+
+router.get('/:id/versions/:versionNo', async (req, res) => {
+  try {
+    const [[row]] = await pool.query(
+      'SELECT * FROM report_versions WHERE report_id = ? AND version_no = ?',
+      [req.params.id, req.params.versionNo]
+    )
+    if (!row) return res.status(404).json({ success: false, message: '报告版本不存在' })
+    res.json({ success: true, data: normalizeReport(row) })
+  } catch (error) {
+    console.error('获取报告版本失败:', error)
+    res.status(500).json({ success: false, message: '获取报告版本失败' })
   }
 })
 

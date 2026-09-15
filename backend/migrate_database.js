@@ -1,5 +1,6 @@
 const mysql = require('mysql2/promise')
 const path = require('path')
+const standardsSchema = require('./database/standards_schema')
 require('dotenv').config({ path: path.join(__dirname, '.env') })
 
 async function migrate() {
@@ -73,6 +74,26 @@ async function migrate() {
     if (!slopeColSet.has('contact_person')) {
       await run(`ALTER TABLE slopes ADD COLUMN contact_person VARCHAR(100)`)
       console.log('[migrate] added slopes.contact_person')
+    }
+
+    const meetingOverviewColumns = [
+      ['slope_length', 'DECIMAL(10,2) NULL'],
+      ['slope_position', 'VARCHAR(50) NULL'],
+      ['design_displacement_piles', 'INT NULL'],
+      ['design_settlement_plates', 'INT NULL'],
+      ['design_anchor_dynamometers', 'INT NULL'],
+      ['design_inclinometer_length', 'DECIMAL(10,2) NULL'],
+      ['construction_status', 'VARCHAR(100) NULL'],
+      ['meeting_work_progress', 'VARCHAR(255) NULL'],
+      ['meeting_remark', 'VARCHAR(255) NULL'],
+      ['include_in_meeting', 'TINYINT(1) NOT NULL DEFAULT 1'],
+      ['meeting_display_order', 'INT NULL'],
+    ]
+    for (const [column, definition] of meetingOverviewColumns) {
+      if (!slopeColSet.has(column)) {
+        await run(`ALTER TABLE slopes ADD COLUMN ${column} ${definition}`)
+        console.log(`[migrate] added slopes.${column}`)
+      }
     }
     
     // 移除旧字段
@@ -175,10 +196,129 @@ async function migrate() {
       await run(`ALTER TABLE inspections ADD COLUMN result TEXT`)
       console.log('[migrate] added inspections.result')
     }
+    if (!inspectionColSet.has('checklist')) {
+      await run(`ALTER TABLE inspections ADD COLUMN checklist JSON NULL`)
+      console.log('[migrate] added inspections.checklist')
+    }
+    if (!inspectionColSet.has('has_problem')) {
+      await run(`ALTER TABLE inspections ADD COLUMN has_problem TINYINT(1) NOT NULL DEFAULT 0`)
+      console.log('[migrate] added inspections.has_problem')
+    }
+    if (!inspectionColSet.has('problem_level')) {
+      await run(`ALTER TABLE inspections ADD COLUMN problem_level VARCHAR(30) NULL`)
+      console.log('[migrate] added inspections.problem_level')
+    }
+    if (!inspectionColSet.has('problem_location')) {
+      await run(`ALTER TABLE inspections ADD COLUMN problem_location VARCHAR(100) NULL`)
+      console.log('[migrate] added inspections.problem_location')
+    }
+    const phaseTwoColumns = [
+      ['rectification_status', `VARCHAR(30) NOT NULL DEFAULT 'not_required'`],
+      ['responsible_person', 'VARCHAR(100) NULL'],
+      ['rectification_deadline', 'DATE NULL'],
+      ['rectification_result', 'TEXT NULL'],
+      ['rectification_images', 'JSON NULL'],
+      ['reviewer', 'VARCHAR(100) NULL'],
+      ['reviewed_at', 'DATETIME NULL'],
+      ['review_comment', 'TEXT NULL'],
+      ['closed_at', 'DATETIME NULL'],
+      ['longitude', 'DECIMAL(12,8) NULL'],
+      ['latitude', 'DECIMAL(11,8) NULL'],
+      ['location_description', 'VARCHAR(255) NULL'],
+      ['weather_snapshot', 'JSON NULL'],
+      ['rainfall_mm', 'DECIMAL(10,2) NULL'],
+      ['photo_metadata', 'JSON NULL'],
+      ['image_assist', 'JSON NULL'],
+      ['voided', 'TINYINT(1) NOT NULL DEFAULT 0'],
+      ['void_reason', 'VARCHAR(255) NULL'],
+      ['voided_by', 'INT NULL'],
+      ['voided_by_name', 'VARCHAR(100) NULL'],
+      ['voided_at', 'DATETIME NULL'],
+    ]
+    for (const [column, definition] of phaseTwoColumns) {
+      if (!inspectionColSet.has(column)) {
+        await run(`ALTER TABLE inspections ADD COLUMN ${column} ${definition}`)
+        console.log(`[migrate] added inspections.${column}`)
+      }
+    }
+
+    await run(`
+      UPDATE inspections
+      SET has_problem = 1,
+          problem_level = COALESCE(problem_level, CASE WHEN status = 'attention' THEN 'general' ELSE 'important' END)
+      WHERE has_problem = 0
+        AND (status IN ('attention', 'abnormal') OR TRIM(COALESCE(problems, '')) <> '')
+    `)
+    await run(`
+      UPDATE inspections
+      SET rectification_status = CASE WHEN has_problem = 1 THEN 'pending' ELSE 'not_required' END
+      WHERE rectification_status IS NULL
+         OR rectification_status = ''
+         OR (has_problem = 1 AND rectification_status = 'not_required')
+    `)
 
     await addIndexIfMissing('inspections', 'idx_slope_id', `ALTER TABLE inspections ADD INDEX idx_slope_id (slope_id)`)
     await addIndexIfMissing('inspections', 'idx_inspection_date', `ALTER TABLE inspections ADD INDEX idx_inspection_date (inspection_date)`)
+    await addIndexIfMissing('inspections', 'idx_inspection_date_id', `ALTER TABLE inspections ADD INDEX idx_inspection_date_id (inspection_date DESC, id DESC)`)
     await addIndexIfMissing('inspections', 'idx_status', `ALTER TABLE inspections ADD INDEX idx_status (status)`)
+    await addIndexIfMissing('inspections', 'idx_has_problem', `ALTER TABLE inspections ADD INDEX idx_has_problem (has_problem)`)
+    await addIndexIfMissing('inspections', 'idx_rectification_status', `ALTER TABLE inspections ADD INDEX idx_rectification_status (rectification_status)`)
+    await addIndexIfMissing('inspections', 'idx_rectification_deadline', `ALTER TABLE inspections ADD INDEX idx_rectification_deadline (rectification_deadline)`)
+    await addIndexIfMissing('inspections', 'idx_voided', `ALTER TABLE inspections ADD INDEX idx_voided (voided)`)
+
+    await run(`
+      CREATE TABLE IF NOT EXISTS inspection_rectification_events (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        inspection_id INT NOT NULL,
+        from_status VARCHAR(30) NULL,
+        to_status VARCHAR(30) NOT NULL,
+        action_note TEXT NULL,
+        images JSON NULL,
+        operator_id INT NULL,
+        operator_name VARCHAR(100) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_rectification_inspection (inspection_id, created_at),
+        FOREIGN KEY (inspection_id) REFERENCES inspections(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `)
+
+    await run(`
+      CREATE TABLE IF NOT EXISTS inspection_plans (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        section VARCHAR(100) NOT NULL,
+        slope_id INT NOT NULL,
+        plan_name VARCHAR(255) NOT NULL,
+        frequency_type VARCHAR(30) NOT NULL DEFAULT 'weekly',
+        interval_days INT NOT NULL DEFAULT 7,
+        responsible_person VARCHAR(100) NULL,
+        advance_notice_days INT NOT NULL DEFAULT 2,
+        next_due_date DATE NOT NULL,
+        last_inspection_date DATETIME NULL,
+        enabled TINYINT(1) NOT NULL DEFAULT 1,
+        created_by INT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_plan_section_due (section, enabled, next_due_date),
+        INDEX idx_plan_slope (slope_id),
+        FOREIGN KEY (slope_id) REFERENCES slopes(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `)
+
+    await run(`
+      CREATE TABLE IF NOT EXISTS monitoring_point_geo_locations (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        point_id INT NOT NULL,
+        longitude DECIMAL(12,8) NULL,
+        latitude DECIMAL(11,8) NULL,
+        coordinate_system VARCHAR(50) NOT NULL DEFAULT 'GCJ-02',
+        accuracy_m DECIMAL(10,2) NULL,
+        updated_by INT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_monitoring_point_geo (point_id),
+        FOREIGN KEY (point_id) REFERENCES monitoring_points(id) ON DELETE CASCADE,
+        FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `)
 
     const [userCols] = await conn.query(
       `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
@@ -623,7 +763,7 @@ async function migrate() {
       CREATE TABLE IF NOT EXISTS report_records (
         id BIGINT AUTO_INCREMENT PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
-        report_type ENUM('weekly','monthly','custom') NOT NULL DEFAULT 'weekly',
+        report_type ENUM('weekly','monthly','custom','supervision_meeting') NOT NULL DEFAULT 'weekly',
         report_period VARCHAR(100),
         status ENUM('draft','pending_review','reviewed','exported','archived') NOT NULL DEFAULT 'draft',
         version_no INT NOT NULL DEFAULT 1,
@@ -651,6 +791,9 @@ async function migrate() {
         FOREIGN KEY (archived_by) REFERENCES users(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `)
+
+    await run(`ALTER TABLE report_records MODIFY COLUMN report_type ENUM('weekly','monthly','custom','supervision_meeting') NOT NULL DEFAULT 'weekly'`)
+    console.log('[migrate] ensured report_records.report_type supports supervision_meeting')
 
     await run(`
       CREATE TABLE IF NOT EXISTS report_versions (
@@ -681,6 +824,11 @@ async function migrate() {
       [DB_NAME]
     )
     const templateColSet = new Set(templateCols.map((c) => c.COLUMN_NAME))
+
+    if (templateColSet.has('type')) {
+      await run(`ALTER TABLE templates MODIFY COLUMN type ENUM('weekly','monthly','custom','supervision_meeting') NOT NULL DEFAULT 'custom'`)
+      console.log('[migrate] ensured templates.type supports supervision_meeting')
+    }
 
     if (!templateColSet.has('template_kind')) {
       await run(`ALTER TABLE templates ADD COLUMN template_kind ENUM('system','word') NOT NULL DEFAULT 'system'`)
@@ -725,7 +873,7 @@ async function migrate() {
         template_id INT NOT NULL,
         version_no INT NOT NULL,
         name VARCHAR(255) NOT NULL,
-        type ENUM('weekly','monthly','custom') NOT NULL DEFAULT 'custom',
+        type ENUM('weekly','monthly','custom','supervision_meeting') NOT NULL DEFAULT 'custom',
         description TEXT,
         template_kind ENUM('system','word') NOT NULL DEFAULT 'system',
         modules JSON NOT NULL,
@@ -743,6 +891,9 @@ async function migrate() {
         FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `)
+
+    await run(`ALTER TABLE template_versions MODIFY COLUMN type ENUM('weekly','monthly','custom','supervision_meeting') NOT NULL DEFAULT 'custom'`)
+    console.log('[migrate] ensured template_versions.type supports supervision_meeting')
 
     await run(`
       INSERT IGNORE INTO template_versions
@@ -766,6 +917,20 @@ async function migrate() {
         created_at
       FROM templates
     `)
+
+    for (const sql of standardsSchema) {
+      await run(sql)
+    }
+    await run(`
+      UPDATE standards s
+      JOIN standard_versions v ON v.standard_id = s.id
+      SET s.current_version_id = v.id
+      WHERE s.current_version_id IS NULL
+        AND v.version_no = (
+          SELECT MAX(v2.version_no) FROM standard_versions v2 WHERE v2.standard_id = s.id
+        )
+    `)
+    console.log('[migrate] ensured standards and compliance tables')
 
     console.log('[migrate] done')
   } finally {

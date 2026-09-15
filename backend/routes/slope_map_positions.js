@@ -5,7 +5,7 @@ const auth = require('../middleware/auth')
 const router = express.Router()
 router.use(auth)
 
-const ALLOWED_POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔']
+const ALLOWED_POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔', '裂缝观测点', '锚索应力计', '锚索应力监测点']
 let positionStyleColumnReady = false
 
 function userName(req) {

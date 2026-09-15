@@ -1,4 +1,5 @@
 const mysql = require('mysql2/promise');
+const standardsSchema = require('./database/standards_schema');
 
 async function createDatabase() {
   try {
@@ -40,6 +41,17 @@ async function createDatabase() {
         end_stake VARCHAR(50),
         slope_type VARCHAR(50) DEFAULT '滑坡',
         max_height DECIMAL(10,2),
+        slope_length DECIMAL(10,2),
+        slope_position VARCHAR(50),
+        design_displacement_piles INT,
+        design_settlement_plates INT,
+        design_anchor_dynamometers INT,
+        design_inclinometer_length DECIMAL(10,2),
+        construction_status VARCHAR(100),
+        meeting_work_progress VARCHAR(255),
+        meeting_remark VARCHAR(255),
+        include_in_meeting TINYINT(1) NOT NULL DEFAULT 1,
+        meeting_display_order INT,
         contact_person VARCHAR(100),
         description TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -90,7 +102,7 @@ async function createDatabase() {
       CREATE TABLE IF NOT EXISTS reports (
         id INT AUTO_INCREMENT PRIMARY KEY,
         title VARCHAR(255) NOT NULL,
-        report_type ENUM('weekly', 'monthly') NOT NULL,
+        report_type ENUM('weekly', 'monthly', 'custom', 'supervision_meeting') NOT NULL,
         date_range VARCHAR(100) NOT NULL,
         points JSON,
         author VARCHAR(50),
@@ -108,7 +120,7 @@ async function createDatabase() {
       CREATE TABLE IF NOT EXISTS templates (
         id INT AUTO_INCREMENT PRIMARY KEY,
         name VARCHAR(255) NOT NULL UNIQUE,
-        type ENUM('weekly', 'monthly', 'custom') NOT NULL DEFAULT 'custom',
+        type ENUM('weekly', 'monthly', 'custom', 'supervision_meeting') NOT NULL DEFAULT 'custom',
         description TEXT,
         modules JSON NOT NULL,
         is_system BOOLEAN DEFAULT FALSE,
@@ -135,16 +147,100 @@ async function createDatabase() {
         problems TEXT,
         suggestions TEXT,
         result TEXT,
+        checklist JSON,
+        has_problem TINYINT(1) NOT NULL DEFAULT 0,
+        problem_level VARCHAR(30),
+        problem_location VARCHAR(100),
         images JSON,
+        rectification_status VARCHAR(30) NOT NULL DEFAULT 'not_required',
+        responsible_person VARCHAR(100),
+        rectification_deadline DATE,
+        rectification_result TEXT,
+        rectification_images JSON,
+        reviewer VARCHAR(100),
+        reviewed_at DATETIME,
+        review_comment TEXT,
+        closed_at DATETIME,
+        longitude DECIMAL(12,8),
+        latitude DECIMAL(11,8),
+        location_description VARCHAR(255),
+        weather_snapshot JSON,
+        rainfall_mm DECIMAL(10,2),
+        photo_metadata JSON,
+        image_assist JSON,
+        voided TINYINT(1) NOT NULL DEFAULT 0,
+        void_reason VARCHAR(255),
+        voided_by INT,
+        voided_by_name VARCHAR(100),
+        voided_at DATETIME,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         FOREIGN KEY (slope_id) REFERENCES slopes(id) ON DELETE SET NULL,
         INDEX idx_slope_id (slope_id),
         INDEX idx_inspection_date (inspection_date),
-        INDEX idx_status (status)
+        INDEX idx_inspection_date_id (inspection_date DESC, id DESC),
+        INDEX idx_status (status),
+        INDEX idx_has_problem (has_problem),
+        INDEX idx_rectification_status (rectification_status),
+        INDEX idx_rectification_deadline (rectification_deadline),
+        INDEX idx_voided (voided)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
     console.log('巡检表创建成功');
+
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS inspection_rectification_events (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        inspection_id INT NOT NULL,
+        from_status VARCHAR(30),
+        to_status VARCHAR(30) NOT NULL,
+        action_note TEXT,
+        images JSON,
+        operator_id INT,
+        operator_name VARCHAR(100),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_rectification_inspection (inspection_id, created_at),
+        FOREIGN KEY (inspection_id) REFERENCES inspections(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS inspection_plans (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        section VARCHAR(100) NOT NULL,
+        slope_id INT NOT NULL,
+        plan_name VARCHAR(255) NOT NULL,
+        frequency_type VARCHAR(30) NOT NULL DEFAULT 'weekly',
+        interval_days INT NOT NULL DEFAULT 7,
+        responsible_person VARCHAR(100),
+        advance_notice_days INT NOT NULL DEFAULT 2,
+        next_due_date DATE NOT NULL,
+        last_inspection_date DATETIME,
+        enabled TINYINT(1) NOT NULL DEFAULT 1,
+        created_by INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_plan_section_due (section, enabled, next_due_date),
+        INDEX idx_plan_slope (slope_id),
+        FOREIGN KEY (slope_id) REFERENCES slopes(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+
+    await connection.execute(`
+      CREATE TABLE IF NOT EXISTS monitoring_point_geo_locations (
+        id BIGINT AUTO_INCREMENT PRIMARY KEY,
+        point_id INT NOT NULL,
+        longitude DECIMAL(12,8),
+        latitude DECIMAL(11,8),
+        coordinate_system VARCHAR(50) NOT NULL DEFAULT 'GCJ-02',
+        accuracy_m DECIMAL(10,2),
+        updated_by INT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uk_monitoring_point_geo (point_id),
+        FOREIGN KEY (point_id) REFERENCES monitoring_points(id) ON DELETE CASCADE,
+        FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
 
     // 插入默认管理员用户
     await connection.execute(`
@@ -427,6 +523,10 @@ async function createDatabase() {
         FOREIGN KEY (batch_id) REFERENCES monitoring_import_batches(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     `);
+
+    for (const sql of standardsSchema) {
+      await connection.execute(sql);
+    }
 
     await connection.end();
     console.log('数据库初始化完成');

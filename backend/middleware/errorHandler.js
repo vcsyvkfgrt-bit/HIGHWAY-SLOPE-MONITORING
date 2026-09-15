@@ -5,9 +5,12 @@ function errorHandler(error, req, res, _next) {
     return
   }
 
-  res.status(error.status || 500).json({
+  const isPayloadTooLarge = error?.type === 'entity.too.large' || error?.status === 413
+  res.status(isPayloadTooLarge ? 413 : (error.status || 500)).json({
     success: false,
-    message: error.message || '服务器内部错误',
+    message: isPayloadTooLarge
+      ? '报告内容过大，请刷新页面后重新生成；系统将自动压缩并重新绘制图表。'
+      : (error.message || '服务器内部错误'),
   })
 }
 

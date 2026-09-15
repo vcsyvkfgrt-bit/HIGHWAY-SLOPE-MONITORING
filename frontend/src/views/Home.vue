@@ -4,7 +4,7 @@
       <template #header>
         <div class="workflow-header">
           <h2>高速公路高边坡及不良地质监测预警报告生成</h2>
-          <p class="subtitle">工作流模式 - 按步骤完成监测报告</p>
+          <p class="subtitle">先确认数据边界与完整性，再组织模板、内容和成果文件</p>
         </div>
       </template>
 
@@ -33,24 +33,29 @@
           <DataEntryWorkflow :workflow-data="workflowData" @next="nextStep" />
         </div>
 
-        <!-- 步骤2：模板选择 -->
+        <!-- 步骤2：数据核验 -->
         <div v-if="currentStep === 1" class="step-content">
+          <WorkflowDataReview :workflow-data="workflowData" @next="nextStep" @prev="prevStep" />
+        </div>
+
+        <!-- 步骤3：模板选择 -->
+        <div v-if="currentStep === 2" class="step-content">
           <TemplateSelectWorkflow :workflow-data="workflowData" @next="nextStep" @prev="prevStep" />
         </div>
 
-        <!-- 步骤3：报告生成 -->
-        <div v-if="currentStep === 2" class="step-content">
+        <!-- 步骤4：报告生成 -->
+        <div v-if="currentStep === 3" class="step-content">
           <ReportGenerateWorkflow 
             :workflow-data="workflowData" 
-            :sub-steps="workflowSteps[2].subSteps" 
+            :sub-steps="workflowSteps[3].subSteps"
             :current-sub-step="currentSubStep"
             @next="nextStep" 
             @prev="prevStep" 
           />
         </div>
 
-        <!-- 步骤4：报告导出 -->
-        <div v-if="currentStep === 3" class="step-content">
+        <!-- 步骤5：报告导出 -->
+        <div v-if="currentStep === 4" class="step-content">
           <div class="export-step">
             <div class="export-icon">
               <el-icon :size="64" color="#409eff"><Document /></el-icon>
@@ -59,6 +64,10 @@
             <p class="export-message">请选择要下载的报告格式</p>
             
             <div class="export-actions">
+              <el-button size="large" @click="previewWordLayout">
+                <el-icon><DocumentChecked /></el-icon>
+                预览 Word 版式
+              </el-button>
               <el-button type="primary" size="large" @click="downloadWord">
                 <el-icon><Document /></el-icon>
                 下载 Word 版本
@@ -85,48 +94,24 @@
         </div>
       </div>
 
-      <!-- 操作按钮 -->
-      <div class="workflow-actions" v-if="currentStep < 3">
-        <el-button v-if="currentStep > 0" @click="prevStep">
-          <el-icon><ArrowLeft /></el-icon>
-          上一步
-        </el-button>
-        <el-button v-if="currentStep < 2" type="primary" @click="nextStep">
-          下一步
-          <el-icon><ArrowRight /></el-icon>
-        </el-button>
-        <el-button v-if="currentStep === 2" type="success" @click="completeWorkflow">
-          <el-icon><Check /></el-icon>
-          完成
-        </el-button>
-      </div>
     </el-card>
   </div>
 </template>
 
 <script setup>
 import { ref, reactive, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter, useRoute } from 'vue-router'
 import axios from 'axios'
 import { API_APP, API_DATA, TEMPLATES_PATH } from '../config/api'
-import { exportReportToWord } from '../utils/reportExport'
+import { exportReportToWord, exportReportToPdf, inspectReportForExport, previewReportAsPdf } from '../utils/reportExport'
 import DataEntryWorkflow from '../components/DataEntryWorkflow.vue'
+import WorkflowDataReview from '../components/WorkflowDataReview.vue'
 import TemplateSelectWorkflow from '../components/TemplateSelectWorkflow.vue'
 import ReportGenerateWorkflow from '../components/ReportGenerateWorkflow.vue'
-import {
-  Check,
-  Download,
-  Refresh,
-  List,
-  ArrowLeft,
-  ArrowRight,
-  Document,
-  DocumentChecked
-} from '@element-plus/icons-vue'
-import jsPDF from 'jspdf'
-import html2canvas from 'html2canvas'
-import * as echarts from 'echarts'
+import { Refresh, List, Document, DocumentChecked } from '@element-plus/icons-vue'
+import { renderAcademicChartImage } from '../utils/academicChart'
+import { absoluteAssetUrl } from '../utils/reportMaterials'
 
 const router = useRouter()
 const route = useRoute()
@@ -136,6 +121,10 @@ const workflowSteps = [
   {
     title: '数据选择',
     description: '选择已录入的监测数据'
+  },
+  {
+    title: '数据核验',
+    description: '确认覆盖范围和连续性'
   },
   {
     title: '模板选择',
@@ -156,9 +145,18 @@ const workflowSteps = [
 const currentStep = ref(0)
 // 当前子步骤
 const currentSubStep = ref(0)
+const CONTENT_STEP = 3
 
 // 工作流数据
 const workflowData = reactive({
+  scope: {
+    sections: [],
+    section: '',
+    slopeIds: [],
+    monitoringTypes: [],
+    dateRange: [],
+    cutoff: new Date().toISOString().slice(0, 10),
+  },
   // 数据录入
   dataEntry: {
     slope: '',
@@ -166,11 +164,8 @@ const workflowData = reactive({
     date: new Date(),
     values: []
   },
-  // 数据查看
-  dataView: {
-    selectedSlopes: [],
-    dateRange: []
-  },
+  dataReview: null,
+  reportMaterials: null,
   // 模板选择
   templateSelect: {
     reportType: 'weekly',
@@ -219,9 +214,9 @@ const getSubStepsByTemplate = (templateSelect) => {
 
 // 下一步
 const nextStep = () => {
-  if (currentStep.value === 2 && workflowSteps[2].subSteps.length > 0) {
+  if (currentStep.value === CONTENT_STEP && workflowSteps[CONTENT_STEP].subSteps.length > 0) {
     // 在报告生成步骤，先完成子步骤
-    if (currentSubStep.value < workflowSteps[2].subSteps.length - 1) {
+    if (currentSubStep.value < workflowSteps[CONTENT_STEP].subSteps.length - 1) {
       currentSubStep.value++
     } else {
       // 子步骤完成，进入完成步骤
@@ -231,8 +226,8 @@ const nextStep = () => {
   } else if (currentStep.value < workflowSteps.length - 1) {
     currentStep.value++
     // 如果进入报告生成步骤，根据模板选择设置子步骤
-    if (currentStep.value === 2) {
-      workflowSteps[2].subSteps = getSubStepsByTemplate(workflowData.templateSelect)
+    if (currentStep.value === CONTENT_STEP) {
+      workflowSteps[CONTENT_STEP].subSteps = getSubStepsByTemplate(workflowData.templateSelect)
       currentSubStep.value = 0
     }
   }
@@ -240,7 +235,7 @@ const nextStep = () => {
 
 // 上一步
 const prevStep = () => {
-  if (currentStep.value === 2 && workflowSteps[2].subSteps.length > 0 && currentSubStep.value > 0) {
+  if (currentStep.value === CONTENT_STEP && workflowSteps[CONTENT_STEP].subSteps.length > 0 && currentSubStep.value > 0) {
     // 在报告生成步骤，先退回到上一个子步骤
     currentSubStep.value--
   } else if (currentStep.value > 0) {
@@ -249,61 +244,35 @@ const prevStep = () => {
   }
 }
 
-// 完成工作流
-const completeWorkflow = async () => {
+// 下载Word版本
+const previewWordLayout = async () => {
   try {
-    const reportForm = workflowData.reportGenerate || {}
-    if (!reportForm.title) {
-      ElMessage.warning('请先填写报告标题')
+    if (!workflowData.report?.id) {
+      ElMessage.warning('请先完成报告生成，再预览最终 Word 版式')
       return
     }
-
-    const response = await fetch(`${API_DATA}/api/reports`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
-      },
-      body: JSON.stringify({
-        title: reportForm.title || '监测报告',
-        report_type: workflowData.templateSelect?.reportType || 'weekly',
-        report_period: reportForm.reportDate ? reportForm.reportDate.slice(0, 7) : '',
-        author: reportForm.author || '',
-        reviewer: reportForm.reviewer || '',
-        report_date: reportForm.reportDate || new Date().toISOString().slice(0, 10),
-        selected_data: workflowData.dataEntry?.selectedData || [],
-        template_snapshot: workflowData.templateSelect?.preview || null,
-        content_json: {
-          title: reportForm.title,
-          author: reportForm.author,
-          reviewer: reportForm.reviewer,
-          reportDate: reportForm.reportDate,
-          moduleContents: reportForm.moduleContents || {},
-        },
-        chart_assets: [],
-        status: 'draft',
-      }),
+    const response = await fetch(`${API_DATA}/api/reports/${workflowData.report.id}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
     })
     const result = await response.json()
-    if (!response.ok || !result.success) throw new Error(result.message || '报告保存失败')
-
-    workflowData.report = {
-      id: result.data.id,
-      title: reportForm.title || '监测报告',
-      author: reportForm.author || '管理员',
-      reportType: workflowData.templateSelect.reportType,
-      generateTime: new Date().toLocaleString(),
-      version_no: result.data.version_no,
+    if (!response.ok || !result.success) throw new Error(result.message || '获取报告失败')
+    const report = result.data.report
+    const inspection = inspectReportForExport(report)
+    if (inspection.warnings.length) {
+      await ElMessageBox.confirm(
+        `预览检查发现以下事项：\n${inspection.warnings.slice(0, 6).map(item => `· ${item}`).join('\n')}\n\n是否继续生成预览？`,
+        'Word 版式检查',
+        { confirmButtonText: '继续预览', cancelButtonText: '返回修改', type: 'warning' }
+      )
     }
-    currentStep.value = 3
-    ElMessage.success('报告已保存到报告列表')
+    await previewReportAsPdf(report)
   } catch (error) {
+    if (error === 'cancel' || error === 'close') return
     console.error(error)
-    ElMessage.error(error.message || '报告保存失败')
+    ElMessage.error(error.message || 'Word 版式预览失败')
   }
 }
 
-// 下载Word版本
 const downloadWord = async () => {
   try {
     let report
@@ -322,15 +291,30 @@ const downloadWord = async () => {
         reviewer: form.reviewer || '',
         report_date: form.reportDate || new Date().toISOString().slice(0, 10),
         selected_data: workflowData.dataEntry?.selectedData || [],
+        chart_assets: form.chartAssets || [],
         template_snapshot: workflowData.templateSelect?.preview || null,
         content_json: {
           title: form.title,
           author: form.author,
           reviewer: form.reviewer,
           reportDate: form.reportDate,
+          scope: workflowData.scope || {},
+          dataReview: workflowData.dataReview || null,
+          materialSummary: workflowData.reportMaterials?.summary || {},
+          materialProvenance: workflowData.reportMaterials?.provenance || {},
           moduleContents: form.moduleContents || {},
+          structuredContents: form.structuredContents || {},
+          exportOptions: form.exportOptions || {},
         },
       }
+    }
+    const inspection = inspectReportForExport(report)
+    if (inspection.warnings.length) {
+      await ElMessageBox.confirm(
+        `导出检查发现以下事项：\n${inspection.warnings.slice(0, 6).map(item => `· ${item}`).join('\n')}\n\n是否仍然导出？`,
+        'Word 导出检查',
+        { confirmButtonText: '仍然导出', cancelButtonText: '返回修改', type: 'warning' }
+      )
     }
     await exportReportToWord(report)
     if (workflowData.report?.id) {
@@ -345,6 +329,7 @@ const downloadWord = async () => {
     }
     ElMessage.success('Word报告生成成功！')
   } catch (error) {
+    if (error === 'cancel' || error === 'close') return
     console.error(error)
     ElMessage.error(error.message || 'Word报告生成失败')
   }
@@ -352,145 +337,46 @@ const downloadWord = async () => {
 
 // 生成图表
 const generateChart = async (slopeCategory = '') => {
-  return new Promise((resolve) => {
-    // 创建临时图表容器
-    const chartContainer = document.createElement('div')
-    chartContainer.style.position = 'fixed'
-    chartContainer.style.top = '-9999px'
-    chartContainer.style.left = '-9999px'
-    chartContainer.style.width = '800px'
-    chartContainer.style.height = '400px'
-    document.body.appendChild(chartContainer)
-    
-    // 初始化图表
-    const chartInstance = echarts.init(chartContainer)
-    
-    // 获取选择的监测数据
-    let selectedData = workflowData.dataEntry.selectedData || []
-    
-    // 根据边坡类别过滤数据
-    if (slopeCategory) {
-      selectedData = selectedData.filter(item => {
-        // 处理不同的数据结构
-        return item.slope === slopeCategory || item.monitoringPoint?.includes(slopeCategory)
-      })
-    }
-    
-    if (selectedData.length === 0) {
-      // 没有数据时显示默认图表
-      chartInstance.setOption({
-        title: {
-          text: slopeCategory ? `${slopeCategory} 无监测数据` : '无监测数据',
-          left: 'center'
-        },
-        tooltip: {
-          trigger: 'axis'
-        },
-        grid: {
-          left: '3%',
-          right: '4%',
-          bottom: '3%',
-          containLabel: true
-        },
-        xAxis: {
-          type: 'category',
-          boundaryGap: false,
-          data: ['无数据']
-        },
-        yAxis: {
-          type: 'value',
-          name: '监测数据'
-        },
-        series: [{
-          name: '无数据',
-          type: 'line',
-          data: [0]
-        }]
-      })
-    } else {
-      // 按监测点分组
-      const groups = {}
-      selectedData.forEach(item => {
-        // 处理不同的数据结构
-        const pointName = item.pointName || item.monitoringPoint || item.slope
-        const monitorDate = item.monitorDate || item.monitoringTime
-        const value = item.value || item.monitoringData
-        
-        if (!groups[pointName]) {
-          groups[pointName] = {
-            name: pointName,
-            data: {}
-          }
-        }
-        groups[pointName].data[monitorDate] = parseFloat(value)
-      })
-      
-      // 提取日期
-      const dates = [...new Set(selectedData.map(item => item.monitorDate || item.monitoringTime))].sort()
-      
-      // 生成系列数据
-      const series = Object.values(groups).map(group => ({
-        name: group.name,
-        type: 'line',
-        data: dates.map(date => group.data[date] || null),
-        smooth: true,
-        connectNulls: true
-      }))
-      
-      // 设置图表选项
-      chartInstance.setOption({
-        title: {
-          text: slopeCategory ? `${slopeCategory} 监测数据趋势图` : '监测数据趋势图',
-          left: 'center'
-        },
-        tooltip: {
-          trigger: 'axis'
-        },
-        legend: {
-          data: series.map(s => s.name),
-          bottom: 0
-        },
-        grid: {
-          left: '3%',
-          right: '4%',
-          bottom: '15%',
-          containLabel: true
-        },
-        xAxis: {
-          type: 'category',
-          boundaryGap: false,
-          data: dates
-        },
-        yAxis: {
-          type: 'value',
-          name: '监测数据'
-        },
-        series: series
-      })
-    }
-    
-    // 延迟一下确保图表渲染完成
-    setTimeout(() => {
-      // 获取图表的base64图片
-      const chartImage = chartInstance.getDataURL({
-        type: 'png',
-        pixelRatio: 2
-      })
-      
-      // 销毁图表实例
-      chartInstance.dispose()
-      
-      // 移除临时容器
-      document.body.removeChild(chartContainer)
-      
-      resolve(chartImage)
-    }, 500)
+  let selectedData = workflowData.dataEntry.selectedData || []
+  if (slopeCategory) {
+    selectedData = selectedData.filter(item => item.slope === slopeCategory || item.monitoringPoint?.includes(slopeCategory))
+  }
+
+  const groups = {}
+  selectedData.forEach(item => {
+    const pointName = item.pointName || item.monitoringPoint || item.slope || '监测点'
+    const monitorDate = item.monitorDate || item.monitoringTime
+    const value = Number(item.value ?? item.monitoringData)
+    if (!monitorDate || !Number.isFinite(value)) return
+    if (!groups[pointName]) groups[pointName] = []
+    groups[pointName].push([monitorDate, value])
+  })
+
+  const series = Object.entries(groups).map(([name, data]) => ({
+    name,
+    data: data.sort(([a], [b]) => String(a).localeCompare(String(b))),
+  }))
+
+  return renderAcademicChartImage({
+    key: `home-export-${Date.now()}`,
+    kind: 'chart',
+    title: slopeCategory ? `${slopeCategory} 监测数据趋势图` : '监测数据趋势图',
+    chartType: 'line',
+    xName: '监测日期',
+    yName: '监测值',
+    source: 'selected_data',
+    series: series.length ? series : [{ name: '无数据', data: [[new Date().toISOString().slice(0, 10), 0]] }],
   })
 }
 
 // 下载PDF版本
 function getPdfChartAssets() {
-  const localAssets = JSON.parse(localStorage.getItem('reportChartMaterials') || '[]')
+  let localAssets = []
+  try {
+    localAssets = JSON.parse(localStorage.getItem('reportChartMaterials') || '[]')
+  } catch {
+    localAssets = []
+  }
   const workflowAssets = workflowData.reportGenerate?.chartAssets || []
   return [...workflowAssets, ...localAssets]
 }
@@ -558,95 +444,117 @@ async function appendProcessedPdfContent(parent, content) {
   appendPdfParagraph(parent, text.slice(lastIndex))
 }
 
-// 下载PDF版本
-const downloadPDF = async () => {
-  let tempElement = null
-  try {
-    ElMessage.info('正在生成PDF报告...')
-
-    tempElement = document.createElement('div')
-    tempElement.style.position = 'fixed'
-    tempElement.style.top = '-9999px'
-    tempElement.style.left = '-9999px'
-    tempElement.style.width = '210mm'
-    tempElement.style.padding = '20mm'
-    tempElement.style.boxSizing = 'border-box'
-    tempElement.style.backgroundColor = 'white'
-    tempElement.style.color = '#222'
-    tempElement.style.fontFamily = 'SimSun, Microsoft YaHei, serif'
-    document.body.appendChild(tempElement)
-
-    const title = workflowData.reportGenerate.title || '监测报告'
-    const author = workflowData.reportGenerate.author || '未填写'
-    const reviewer = workflowData.reportGenerate.reviewer || '未填写'
-    const reportDate = workflowData.reportGenerate.reportDate || '未选择'
-
-    const titleElement = document.createElement('h1')
-    titleElement.style.textAlign = 'center'
-    titleElement.style.margin = '0 0 18px'
-    titleElement.style.fontSize = '24px'
-    titleElement.textContent = title
-    tempElement.appendChild(titleElement)
-
-    const metaElement = document.createElement('div')
-    metaElement.style.textAlign = 'center'
-    metaElement.style.color = '#555'
-    metaElement.style.marginBottom = '18px'
-    metaElement.textContent = `编制人：${author}    审核人：${reviewer}    日期：${reportDate}`
-    tempElement.appendChild(metaElement)
-
-    const divider = document.createElement('hr')
-    divider.style.marginBottom = '18px'
-    tempElement.appendChild(divider)
-
-    const moduleContents = workflowData.reportGenerate.moduleContents || {}
-    for (const [key, content] of Object.entries(moduleContents)) {
-      if (!content) continue
-
-      const sectionTitle = key.split('-').pop() || key
-      const sectionElement = document.createElement('h2')
-      sectionElement.style.margin = '20px 0 10px'
-      sectionElement.style.fontSize = '18px'
-      sectionElement.textContent = sectionTitle
-      tempElement.appendChild(sectionElement)
-
-      await appendProcessedPdfContent(tempElement, content)
-    }
-
-    const canvas = await html2canvas(tempElement, {
-      scale: 2,
-      useCORS: true,
-      logging: false,
-      backgroundColor: '#ffffff',
+async function appendPdfStructuredMaterial(parent, material) {
+  if (!material) return
+  if (material.kind === 'text') {
+    appendPdfParagraph(parent, material.value)
+    return
+  }
+  if (material.kind === 'table') {
+    if (material.note) appendPdfParagraph(parent, material.note)
+    const table = document.createElement('table')
+    table.style.width = '100%'
+    table.style.borderCollapse = 'collapse'
+    table.style.fontSize = '10px'
+    const header = document.createElement('tr')
+    ;(material.columns || []).forEach(column => {
+      const th = document.createElement('th')
+      th.textContent = column.label
+      Object.assign(th.style, { border: '1px solid #7d8a93', padding: '6px', background: '#eef2f4', textAlign: 'center' })
+      header.appendChild(th)
     })
-
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-    const pdfWidth = pdf.internal.pageSize.getWidth()
-    const pdfHeight = pdf.internal.pageSize.getHeight()
-    const imgWidth = pdfWidth
-    const imgHeight = (canvas.height * pdfWidth) / canvas.width
-    const pageImage = canvas.toDataURL('image/png')
-
-    let position = 0
-    let remainingHeight = imgHeight
-    pdf.addImage(pageImage, 'PNG', 0, position, imgWidth, imgHeight)
-    remainingHeight -= pdfHeight
-
-    while (remainingHeight > 0) {
-      position -= pdfHeight
-      pdf.addPage()
-      pdf.addImage(pageImage, 'PNG', 0, position, imgWidth, imgHeight)
-      remainingHeight -= pdfHeight
+    table.appendChild(header)
+    ;(material.rows || []).slice(0, 1000).forEach(row => {
+      const tr = document.createElement('tr')
+      ;(material.columns || []).forEach(column => {
+        const td = document.createElement('td')
+        td.textContent = row?.[column.key] ?? ''
+        Object.assign(td.style, { border: '1px solid #9da8af', padding: '5px', verticalAlign: 'top' })
+        tr.appendChild(td)
+      })
+      table.appendChild(tr)
+    })
+    parent.appendChild(table)
+    return
+  }
+  if (material.kind === 'chart') {
+    const hasChartData = (material.series || []).some(series => (series.data || []).length > 0)
+    if (hasChartData) appendPdfChart(parent, await renderAcademicChartImage(material), material.title)
+    else appendPdfParagraph(parent, '当前报告范围内暂无可绘制数据')
+    return
+  }
+  if (material.kind === 'section-list') {
+    const sections = material.sections || []
+    if (!sections.length) {
+      appendPdfParagraph(parent, '当前报告范围内暂无可生成的边坡章节')
+      return
     }
+    for (const section of sections) {
+      const title = document.createElement('h3')
+      title.style.margin = '18px 0 8px'
+      title.style.fontSize = '15px'
+      title.textContent = section.title || '分边坡监测进展'
+      parent.appendChild(title)
+      for (const block of (section.blocks || [])) {
+        if (block.title && block.kind !== 'chart') {
+          const subTitle = document.createElement('h4')
+          subTitle.style.margin = '12px 0 6px'
+          subTitle.style.fontSize = '13px'
+          subTitle.textContent = block.title
+          parent.appendChild(subTitle)
+        }
+        await appendPdfStructuredMaterial(parent, block)
+      }
+    }
+    return
+  }
+  if (material.kind === 'image-list') {
+    for (const item of (material.items || []).slice(0, 20)) appendPdfChart(parent, absoluteAssetUrl(item.file_path), item.caption || item.original_name)
+  }
+}
 
-    const fileName = `${workflowData.reportGenerate.title || '监测报告'}_${new Date().toISOString().split('T')[0]}.pdf`
-    pdf.save(fileName)
-    ElMessage.success('PDF报告生成成功')
+// 下载 PDF 使用与 Word 预览相同的分页排版。
+const downloadPDF = async () => {
+  try {
+    ElMessage.info('正在排版并生成 PDF 报告，请稍候……')
+    let report
+    if (workflowData.report?.id) {
+      const response = await fetch(`${API_DATA}/api/reports/${workflowData.report.id}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem('token') || ''}` },
+      })
+      const result = await response.json()
+      if (!response.ok || !result.success) throw new Error(result.message || '获取报告失败')
+      report = result.data.report
+    } else {
+      const form = workflowData.reportGenerate || {}
+      report = {
+        title: form.title || '监测报告',
+        author: form.author || '',
+        reviewer: form.reviewer || '',
+        report_date: form.reportDate || new Date().toISOString().slice(0, 10),
+        selected_data: workflowData.dataEntry?.selectedData || [],
+        chart_assets: form.chartAssets || [],
+        template_snapshot: workflowData.templateSelect?.preview || null,
+        content_json: {
+          title: form.title,
+          author: form.author,
+          reviewer: form.reviewer,
+          reportDate: form.reportDate,
+          scope: workflowData.scope || {},
+          dataReview: workflowData.dataReview || null,
+          materialSummary: workflowData.reportMaterials?.summary || {},
+          materialProvenance: workflowData.reportMaterials?.provenance || {},
+          moduleContents: form.moduleContents || {},
+          structuredContents: form.structuredContents || {},
+          exportOptions: form.exportOptions || {},
+        },
+      }
+    }
+    await exportReportToPdf(report)
+    ElMessage.success('PDF 报告生成成功')
   } catch (error) {
-    console.error('生成PDF失败:', error)
-    ElMessage.error(error.message || '生成PDF失败，请重试')
-  } finally {
-    if (tempElement?.parentNode) document.body.removeChild(tempElement)
+    console.error('生成 PDF 失败:', error)
+    ElMessage.error(error.message || '生成 PDF 失败，请重试')
   }
 }
 
@@ -701,8 +609,10 @@ const resetWorkflow = () => {
       workflowData[key] = null
     }
   })
-  
+  workflowSteps[CONTENT_STEP].subSteps = []
+  currentSubStep.value = 0
   currentStep.value = 0
+  router.replace('/report-generate')
   ElMessage.success('工作流已重置')
 }
 
@@ -723,9 +633,11 @@ async function applyTemplateIdFromRoute(templateId) {
     const t = data.data
     const rawModules = Array.isArray(t.modules) ? t.modules : []
     const modules = rawModules.map((m) => ({
+      id: m.id,
       name: m.name || m.content || '模块',
       children: Array.isArray(m.children)
-        ? m.children.map((c) => ({
+          ? m.children.map((c) => ({
+            id: c.id,
             name: c.name || '内容',
             type: c.type || 'text',
             options: c.options,
@@ -742,6 +654,7 @@ async function applyTemplateIdFromRoute(templateId) {
       style: m.style,
     }))
     const isWordTemplate = t.template_kind === 'word'
+    const isPdfTemplate = t.data_bindings?.__sourceFormat === 'pdf'
 
     workflowData.templateSelect = {
       reportType: t.type || 'weekly',
@@ -752,18 +665,18 @@ async function applyTemplateIdFromRoute(templateId) {
         templateKind: t.template_kind || 'system',
         versionNo: t.version_no || 1,
         name: t.name,
-        source: isWordTemplate ? 'Word模板' : '系统模板',
+        source: isWordTemplate ? (isPdfTemplate ? 'PDF模板' : 'Word模板') : '系统模板',
         modules,
         dataBindings: t.data_bindings || {},
         placeholders: t.placeholders || [],
       },
     }
 
-    workflowSteps[2].subSteps = getSubStepsByTemplate(workflowData.templateSelect)
+    workflowSteps[CONTENT_STEP].subSteps = getSubStepsByTemplate(workflowData.templateSelect)
     currentSubStep.value = 0
-    currentStep.value = 2
-    ElMessage.success(`已加载模板「${t.name}」，已进入报告内容填写`)
-    router.replace({ path: '/home', query: {} })
+    currentStep.value = 0
+    ElMessage.success(`已预选模板「${t.name}」，请先确定本次报告的数据范围`)
+    router.replace({ path: '/report-generate', query: {} })
   } catch (e) {
     console.error(e)
     ElMessage.error('加载模板失败，请检查网络或登录状态')

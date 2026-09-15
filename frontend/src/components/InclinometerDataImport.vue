@@ -128,10 +128,18 @@
           <el-table-column prop="created_at" label="上传时间" width="170" align="center">
             <template #default="{ row }">{{ formatDateTime(row.created_at) }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="140" fixed="right" align="center">
+          <el-table-column label="操作" width="190" fixed="right" align="center">
             <template #default="{ row }">
               <el-button type="primary" link @click="showSurveyDetail(row)">明细</el-button>
               <el-button type="primary" link @click="editSurvey(row)">编辑</el-button>
+              <el-button
+                type="danger"
+                link
+                :loading="deletingSurveyId === row.id"
+                @click="deleteSurvey(row)"
+              >
+                删除
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -229,7 +237,7 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Upload } from '@element-plus/icons-vue'
 import * as XLSX from 'xlsx'
 import { useRouter } from 'vue-router'
@@ -256,6 +264,7 @@ const currentSurvey = ref(null)
 const editDialogVisible = ref(false)
 const editableSurvey = ref(null)
 const savingSurvey = ref(false)
+const deletingSurveyId = ref(null)
 
 const surveyRows = computed(() => {
   const baseline = currentProfile.value?.baseline
@@ -679,6 +688,41 @@ async function saveSurveyEdit() {
     ElMessage.error(error.message || '保存测斜观测数据失败')
   } finally {
     savingSurvey.value = false
+  }
+}
+
+async function deleteSurvey(row) {
+  if (!row?.id) return
+  try {
+    await ElMessageBox.confirm(
+      `确定删除 ${row.hole_name || '该测斜孔'} ${row.survey_date || ''} 这一期观测数据吗？删除后该期曲线和深度明细都会移除。`,
+      '删除测斜观测期',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+  } catch {
+    return
+  }
+
+  deletingSurveyId.value = row.id
+  try {
+    await dataRequest(`/api/inclinometer-data/surveys/${row.id}`, {
+      method: 'DELETE',
+    })
+    ElMessage.success('该期测斜观测数据已删除')
+    if (currentSurvey.value?.id === row.id) {
+      detailDialogVisible.value = false
+      currentSurvey.value = null
+    }
+    await loadCurrentPointData()
+    await loadBaselineStatus()
+  } catch (error) {
+    ElMessage.error(error.message || '删除测斜观测数据失败')
+  } finally {
+    deletingSurveyId.value = null
   }
 }
 

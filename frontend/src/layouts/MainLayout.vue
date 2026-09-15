@@ -11,7 +11,7 @@
         active-text-color="#409eff"
       >
         <el-menu-item index="/home">
-          <span>工作流首页</span>
+          <span>监测工作台</span>
         </el-menu-item>
 
         <el-sub-menu index="template-group">
@@ -19,7 +19,9 @@
             <span>模板</span>
           </template>
           <el-menu-item index="/template-list">系统模板</el-menu-item>
-          <el-menu-item index="/word-template">Word 模板</el-menu-item>
+          <el-menu-item index="/word-template">Word / PDF 模板</el-menu-item>
+          <el-menu-item index="/report-generate">报告生成</el-menu-item>
+          <el-menu-item index="/report-list">报告列表</el-menu-item>
         </el-sub-menu>
 
         <el-menu-item index="/data-entry">
@@ -32,13 +34,25 @@
           <span>边坡巡检</span>
         </el-menu-item>
 
+        <el-menu-item index="/standards-compliance">
+          <span>规范与合规</span>
+        </el-menu-item>
+
         <el-sub-menu index="engineering-flow">
           <template #title>
             <span>工程监测流程</span>
           </template>
           <el-menu-item index="/project-lifecycle">项目生命周期</el-menu-item>
-          <el-menu-item index="/alarm-management">异常报警处理</el-menu-item>
           <el-menu-item index="/operation-logs">操作日志</el-menu-item>
+        </el-sub-menu>
+
+        <el-sub-menu index="monitoring-analysis">
+          <template #title>
+            <span>监测研判</span>
+          </template>
+          <el-menu-item index="/map-overview">边坡空间态势</el-menu-item>
+          <el-menu-item index="/weather-rainfall">天气与雨情</el-menu-item>
+          <el-menu-item index="/alarm-management">异常报警</el-menu-item>
         </el-sub-menu>
 
         <el-sub-menu index="base-data">
@@ -47,6 +61,7 @@
           </template>
           <el-menu-item index="/slope-management">边坡与测点管理</el-menu-item>
           <el-menu-item index="/slope-ledger">边坡监测台账</el-menu-item>
+          <el-menu-item index="/spatial-data">空间资料管理</el-menu-item>
         </el-sub-menu>
       </el-menu>
     </el-aside>
@@ -145,9 +160,6 @@ const activeMenu = computed(() => {
   const p = route.path
   if (p.startsWith('/template-create') || p.startsWith('/template-edit')) {
     return '/template-list'
-  }
-  if (p === '/report-generate' || p === '/report-list') {
-    return '/home'
   }
   return p
 })

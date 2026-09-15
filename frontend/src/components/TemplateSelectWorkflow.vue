@@ -21,6 +21,10 @@
               <el-icon><Calendar /></el-icon>
               月报
             </el-radio-button>
+            <el-radio-button value="supervision_meeting">
+              <el-icon><Document /></el-icon>
+              监理例会
+            </el-radio-button>
           </el-radio-group>
         </div>
 
@@ -49,8 +53,8 @@
                   <h5>{{ template.name }}</h5>
                   <p>{{ template.description || '暂无描述' }}</p>
                   <div class="template-tags">
-                    <el-tag size="small" :type="template.type === 'weekly' ? 'primary' : 'success'">
-                      {{ template.type === 'weekly' ? '周报' : '月报' }}
+                    <el-tag size="small" :type="getReportTypeTag(template.type)">
+                      {{ getReportTypeLabel(template.type) }}
                     </el-tag>
                     <el-tag v-if="template.is_system" size="small" type="danger" style="margin-left: 5px">系统</el-tag>
                   </div>
@@ -60,30 +64,31 @@
           </el-row>
           <el-empty v-if="filteredTemplates.length === 0" description="暂无模板">
             <template #default>
-              <p style="color: #909399; margin-bottom: 16px;">暂无{{ selectedReportType === 'weekly' ? '周报' : '月报' }}模板</p>
+              <p style="color: #909399; margin-bottom: 16px;">暂无{{ getReportTypeLabel(selectedReportType) }}模板</p>
               <el-button type="primary" @click="goToTemplateCreate">
                 <el-icon><Plus /></el-icon>
                 制作模板
               </el-button>
               <el-button @click="goToWordTemplate">
                 <el-icon><Upload /></el-icon>
-                上传Word模板
+                上传 Word / PDF 模板
               </el-button>
             </template>
           </el-empty>
         </div>
 
-        <!-- Word模板选择 -->
+        <!-- 文档模板选择 -->
         <div class="selection-section">
-          <h4>3. 选择 Word 模板（可选）</h4>
+          <h4>3. 选择 Word / PDF 模板（与系统模板二选一）</h4>
           <el-select
             v-model="selectedWordTemplate"
-            placeholder="选择 Word 模板"
+            placeholder="选择 Word / PDF 模板"
             clearable
             style="width: 100%"
+            @change="selectWordTemplate"
           >
             <el-option
-              v-for="template in wordTemplates"
+              v-for="template in filteredWordTemplates"
               :key="template.id"
               :label="template.name"
               :value="template.id"
@@ -98,7 +103,7 @@
           <div class="template-hint">
             <el-link type="primary" @click="goToWordTemplate">
               <el-icon><Plus /></el-icon>
-              管理 Word 模板
+              管理 Word / PDF 模板
             </el-link>
           </div>
         </div>
@@ -116,7 +121,7 @@
             <div class="preview-content">
               <el-descriptions :column="2" border>
                 <el-descriptions-item label="报告类型">
-                  {{ selectedReportType === 'weekly' ? '周报' : '月报' }}
+                  {{ getReportTypeLabel(selectedReportType) }}
                 </el-descriptions-item>
                 <el-descriptions-item label="模板来源">
                   {{ previewData.source }}
@@ -153,7 +158,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import axios from 'axios'
@@ -179,6 +184,20 @@ const searchKeyword = ref('')
 // 系统模板列表（从数据库加载）
 const systemTemplates = ref([])
 const loading = ref(false)
+
+const getReportTypeLabel = (type) => ({
+  weekly: '周报',
+  monthly: '月报',
+  supervision_meeting: '监理例会',
+  custom: '自定义',
+}[type] || type || '报告')
+
+const getReportTypeTag = (type) => ({
+  weekly: 'primary',
+  monthly: 'success',
+  supervision_meeting: 'warning',
+  custom: 'info',
+}[type] || 'info')
 
 // 加载系统模板
 const loadSystemTemplates = async () => {
@@ -222,6 +241,11 @@ const filteredTemplates = computed(() => {
 // Word 模板列表
 const wordTemplates = ref([])
 
+const filteredWordTemplates = computed(() => {
+  if (!selectedReportType.value) return wordTemplates.value
+  return wordTemplates.value.filter(template => template.type === selectedReportType.value)
+})
+
 // 加载 Word 模板
 const loadWordTemplates = async () => {
   try {
@@ -240,6 +264,11 @@ const loadWordTemplates = async () => {
 // 选择系统模板
 const selectSystemTemplate = (templateId) => {
   selectedSystemTemplate.value = templateId
+  selectedWordTemplate.value = ''
+}
+
+const selectWordTemplate = (templateId) => {
+  if (templateId) selectedSystemTemplate.value = ''
 }
 
 // 是否显示预览
@@ -259,23 +288,32 @@ const previewData = computed(() => {
       source: '系统模板',
       modules: template?.modules || [],
       dataBindings: template?.data_bindings || {},
-      placeholders: template?.placeholders || []
+      placeholders: template?.placeholders || [],
+      structure: template?.structure || [],
+      contentText: template?.content_text || '',
+      fileAssetId: template?.file_asset_id || null,
+      sourceFormat: template?.data_bindings?.__sourceFormat || 'system'
     }
   }
   
   if (selectedWordTemplate.value) {
     const template = wordTemplates.value.find(t => t.id === selectedWordTemplate.value)
+    const isPdf = template?.data_bindings?.__sourceFormat === 'pdf'
     return {
       templateId: template?.id,
       templateKind: 'word',
       versionNo: template?.version_no || 1,
-      name: template?.name || 'Word模板',
-      source: 'Word模板',
+      name: template?.name || (isPdf ? 'PDF模板' : 'Word模板'),
+      source: isPdf ? 'PDF模板' : 'Word模板',
       modules: template?.modules?.length
         ? template.modules
         : template?.placeholders?.map(p => ({ name: p.name || p.key || p, type: 'placeholder', children: [] })) || [],
       dataBindings: template?.data_bindings || {},
-      placeholders: template?.placeholders || []
+      placeholders: template?.placeholders || [],
+      structure: template?.structure || [],
+      contentText: template?.content_text || '',
+      fileAssetId: template?.file_asset_id || null,
+      sourceFormat: template?.data_bindings?.__sourceFormat || 'docx'
     }
   }
   
@@ -320,12 +358,23 @@ const nextStep = () => {
 // 监听报告类型变化，清空已选模板
 watch(() => selectedReportType.value, () => {
   selectedSystemTemplate.value = ''
+  selectedWordTemplate.value = ''
 })
 
 // 初始化
-onMounted(() => {
-  loadSystemTemplates()
-  loadWordTemplates()
+onMounted(async () => {
+  await Promise.all([loadSystemTemplates(), loadWordTemplates()])
+  const previous = props.workflowData?.templateSelect
+  if (previous?.preview) {
+    selectedReportType.value = previous.reportType || 'weekly'
+    await nextTick()
+    const normalizeId = (value) => {
+      const number = Number(value)
+      return Number.isFinite(number) && value !== '' ? number : value
+    }
+    selectedSystemTemplate.value = previous.systemTemplate ? normalizeId(previous.systemTemplate) : ''
+    selectedWordTemplate.value = previous.wordTemplate ? normalizeId(previous.wordTemplate) : ''
+  }
 })
 </script>
 

@@ -12,17 +12,36 @@
 
       <section class="context-band" v-loading="slopeContextLoading">
         <div class="context-controls">
+          <label class="field-block section-field">
+            <span>所属标段</span>
+            <el-select
+              :model-value="selectedSection"
+              placeholder="请选择标段"
+              filterable
+              clearable
+              @change="onSectionChange"
+            >
+              <el-option
+                v-for="section in sectionOptions"
+                :key="section"
+                :label="section"
+                :value="section"
+              />
+            </el-select>
+          </label>
+
           <label class="field-block slope-field">
             <span>监测边坡</span>
             <el-select
               v-model="selectedSlopeId"
-              placeholder="请选择边坡"
+              :placeholder="selectedSection ? '请选择边坡' : '请先选择标段'"
               filterable
               clearable
+              :disabled="!selectedSection"
               @change="onSlopeChange"
             >
               <el-option
-                v-for="s in slopes"
+                v-for="s in filteredSlopes"
                 :key="s.id"
                 :label="s.slope_name"
                 :value="String(s.id)"
@@ -30,21 +49,28 @@
             </el-select>
           </label>
 
-          <div class="field-block type-field">
+          <label class="field-block type-field">
             <span>监测类型</span>
-            <div class="type-segments">
-              <el-button
+            <el-select
+              :model-value="selectedPointType"
+              :placeholder="selectedSlopeId ? '请选择监测类型' : '请先选择边坡'"
+              :disabled="!selectedSlopeId"
+              @change="selectPointType"
+            >
+              <el-option
                 v-for="t in POINT_TYPES"
                 :key="t"
-                :type="selectedPointType === t ? 'primary' : 'default'"
                 :disabled="!selectedSlopeId || (typeCounts[t] ?? 0) === 0"
-                @click="selectPointType(t)"
+                :label="`${t}（${typeCounts[t] ?? 0} 个测点）`"
+                :value="t"
               >
-                {{ t }}
-                <span class="segment-count">{{ typeCounts[t] ?? 0 }}</span>
-              </el-button>
-            </div>
-          </div>
+                <div class="type-option">
+                  <span>{{ t }}</span>
+                  <em>{{ typeCounts[t] ?? 0 }} 个测点</em>
+                </div>
+              </el-option>
+            </el-select>
+          </label>
         </div>
 
         <div v-if="selectedSlopeId" class="context-summary">
@@ -131,8 +157,12 @@
                 </el-upload>
                 <div class="excel-tools">
                   <span>当前对象：{{ currentSlopeDetail?.slope_name || currentSlopeName }} · {{ selectedPointType }}</span>
-                  <el-button text type="primary" :icon="Download" @click="exportTemplate">下载标准模板</el-button>
+                  <div class="excel-tool-actions">
+                    <el-tag size="small" type="info">重复日期上传时确认</el-tag>
+                    <el-button text type="primary" :icon="Download" @click="exportTemplate">下载标准模板</el-button>
+                  </div>
                 </div>
+                <div class="import-rule-tip">发现数据库已有日期时，可选择覆盖已有数据，或跳过已有日期、只录入新数据。</div>
               </div>
 
               <div v-if="uploadProcessing" class="upload-progress">
@@ -160,6 +190,7 @@
                   <div><span>识别日期范围</span><strong>{{ importDateRange || '-' }}</strong></div>
                   <div><span>匹配测点</span><strong>{{ importedMatchedPointCount }}</strong></div>
                   <div><span>待校核日期</span><strong>{{ modifiedCount }}</strong></div>
+                  <div v-if="importedSkippedDateCount"><span>已跳过日期</span><strong>{{ importedSkippedDateCount }}</strong></div>
                 </div>
 
                 <el-collapse v-model="importedDetailOpen" class="import-detail-collapse">
@@ -792,7 +823,7 @@ const router = useRouter()
 
 /** 与基础数据模块（监测点管理）口径一致 */
 const DEEP_POINT_TYPE = '深部位移测斜孔'
-const POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔']
+const POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔', '裂缝观测点', '锚索应力监测点']
 
 const VALUE_RANGE_BY_TYPE = {
   '地表位移监测点': [-10000000, 10000000],
@@ -803,6 +834,7 @@ const MISSING_REASONS = ['未施工到位', '点位损坏', '现场遮挡', '天
 
 const selectedSlopeId = ref('')
 const selectedPointType = ref('')
+const selectedSection = ref('')
 const slopes = ref([])
 
 const currentSlopeDetail = ref(null)
@@ -896,11 +928,12 @@ const previewing = ref(false)
 const observationDate = ref(new Date().toISOString().slice(0, 10))
 const batchRemark = ref('')
 const overwriteReason = ref('')
-const duplicateAction = ref('overwrite')
+const duplicateAction = ref('skip')
 const damagedPointIds = ref([])
 const previewResult = ref(null)
 const importedFileName = ref('')
 const importedFileSize = ref(0)
+const importedSkippedDateCount = ref(0)
 const uploadProcessing = ref(false)
 const uploadProgress = ref(0)
 const uploadStatusText = ref('')
@@ -918,11 +951,17 @@ const previewPointDetails = ref({})
 const previewPointLoading = ref({})
 const commitResult = ref(null)
 const lastSelectedSlopeId = ref('')
+const lastSelectedSection = ref('')
 
 const modifiedCount = computed(() => matrixRows.value.filter(r => r._modified).length)
 const isImportedMultiDate = computed(() => matrixRows.value.some((row) => row._source === 'excel'))
 const previewIssues = computed(() => previewResult.value?.issues || [])
 const currentSlopeName = computed(() => slopes.value.find((item) => String(item.id) === String(selectedSlopeId.value))?.slope_name || '-')
+const sectionOptions = computed(() => [...new Set(slopes.value.map((item) => item.section).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'zh-CN')))
+const filteredSlopes = computed(() => {
+  if (!selectedSection.value) return []
+  return slopes.value.filter((item) => item.section === selectedSection.value)
+})
 const activePointCount = computed(() => pointsByType.value.filter((point) => isPointAvailable(point, observationDate.value)).length)
 const existingTypeSummary = computed(() => (
   existingSummary.value.by_type?.find((item) => item.point_type === selectedPointType.value) || null
@@ -1259,6 +1298,34 @@ async function onSlopeChange(val) {
   }
 }
 
+async function onSectionChange(val) {
+  const nextSection = String(val || '')
+  const previousSection = lastSelectedSection.value
+  if (previousSection && previousSection !== nextSection && hasPendingInput()) {
+    try {
+      await confirmDiscardPending()
+    } catch {
+      selectedSection.value = previousSection
+      return
+    }
+  }
+
+  selectedSection.value = nextSection
+  lastSelectedSection.value = nextSection
+  selectedSlopeId.value = ''
+  lastSelectedSlopeId.value = ''
+  selectedPointType.value = ''
+  currentSlopeDetail.value = null
+  allPointsOnSlopeCount.value = 0
+  matrixRows.value = []
+  damagedPointIds.value = []
+  pointsByType.value = []
+  existingSummary.value = { by_type: [], by_date: [] }
+  previewResult.value = null
+  commitResult.value = null
+  for (const t of POINT_TYPES) typeCounts[t] = 0
+}
+
 // 选择类型
 async function selectPointType(t) {
   if (selectedPointType.value && selectedPointType.value !== t && hasPendingInput()) {
@@ -1286,6 +1353,7 @@ function initMatrixRows() {
   issueFilter.value = 'all'
   importedFileName.value = ''
   importedFileSize.value = 0
+  importedSkippedDateCount.value = 0
   damagedPointIds.value = []
   if (pointsByType.value.length === 0) return
   // 默认添加一行
@@ -1579,9 +1647,49 @@ function makeImportedRow(monitorDate, remark = '') {
   return row
 }
 
-function applyImportedRows(newRows, file, messagePrefix = '成功导入') {
-  if (newRows.length > 0) {
-    matrixRows.value = newRows
+async function applyImportedRows(newRows, file, messagePrefix = '成功导入') {
+  const existingDates = new Set(
+    (existingSummary.value.by_date || [])
+      .filter(item => item.point_type === selectedPointType.value)
+      .map(item => String(item.monitor_date || '').slice(0, 10))
+      .filter(Boolean)
+  )
+  const duplicateDates = [...new Set(
+    newRows
+      .map(row => String(row.monitor_date || '').slice(0, 10))
+      .filter(date => date && existingDates.has(date))
+  )]
+  let overwriteExisting = false
+  if (duplicateDates.length) {
+    try {
+      await ElMessageBox.confirm(
+        `检测到 ${duplicateDates.length} 个日期已存在。选择“覆盖已有数据”将进入覆盖校核；选择“只录入新日期”将跳过这些日期。`,
+        '发现已录入日期',
+        {
+          confirmButtonText: '覆盖已有数据',
+          cancelButtonText: '只录入新日期',
+          distinguishCancelAndClose: true,
+          closeOnClickModal: false,
+          type: 'warning',
+        }
+      )
+      overwriteExisting = true
+    } catch (action) {
+      if (action === 'close') {
+        ElMessage.info('已取消本次导入')
+        return false
+      }
+    }
+  }
+
+  const rowsToImport = overwriteExisting
+    ? newRows
+    : newRows.filter(row => !existingDates.has(String(row.monitor_date || '').slice(0, 10)))
+  duplicateAction.value = overwriteExisting ? 'overwrite' : 'skip'
+  importedSkippedDateCount.value = overwriteExisting ? 0 : newRows.length - rowsToImport.length
+
+  if (rowsToImport.length > 0) {
+    matrixRows.value = rowsToImport
     entryMode.value = 'excel'
     importedFileName.value = file.name
     importedFileSize.value = file.size || 0
@@ -1589,10 +1697,15 @@ function applyImportedRows(newRows, file, messagePrefix = '成功导入') {
     commitResult.value = null
     damagedPointIds.value = []
     importedDetailOpen.value = []
-    ElMessage.success(`${messagePrefix} ${newRows.length} 行数据`)
+    const skippedText = importedSkippedDateCount.value ? `，已跳过 ${importedSkippedDateCount.value} 个已录日期` : ''
+    ElMessage.success(`${messagePrefix} ${rowsToImport.length} 行数据${skippedText}`)
   } else {
-    ElMessage.warning('没有解析到有效的数据行')
+    importedFileName.value = file.name
+    importedFileSize.value = file.size || 0
+    matrixRows.value = []
+    ElMessage.warning(importedSkippedDateCount.value ? `文件中的 ${importedSkippedDateCount.value} 个日期均已录入，无需重复录入` : '没有解析到有效的数据行')
   }
+  return true
 }
 
 function setUploadProgress(percent, text) {
@@ -1643,27 +1756,38 @@ function parseSummaryBlockExcel(jsonData) {
 
 function parseStandardMatrixExcel(jsonData) {
   if (jsonData.length < 2) throw new Error('Excel文件格式不正确，至少需要包含表头和一行数据')
-  const headers = jsonData[0]
-  const dateIndex = headers.findIndex(h => h && String(h).includes('日期'))
-  const remarkIndex = headers.findIndex(h => h && String(h).includes('备注'))
-  if (dateIndex === -1) throw new Error('Excel文件缺少"监测日期"列')
+  const normalizeHeader = (value) => String(value ?? '')
+    .replace(/[\uFEFF\u200B\u00A0]/g, '')
+    .replace(/[\s\r\n]/g, '')
+    .trim()
+  const headerRowIndex = jsonData.findIndex(row => row.some(value => /^(监测|量测|观测|测量|采集)?日期(?:[（(].*[）)])?$/.test(normalizeHeader(value))))
+  if (headerRowIndex === -1) throw new Error('未找到日期表头，请确认工作表中有“监测日期”或“观测日期”等列')
+  const headers = jsonData[headerRowIndex]
+  const normalizedHeaders = headers.map(normalizeHeader)
+  // 兼容“监测日期 / 量测日期 / 观测日期 / 日期”等常见表头写法。
+  let dateIndex = normalizedHeaders.findIndex(h => /日期$/.test(h) || h.includes('监测日期') || h.includes('量测日期') || h.includes('观测日期'))
+  // 某些由旧版脚本导出的文件首列表头可能被 Excel 保存为空，但首列数据仍是日期。
+  const remarkIndex = normalizedHeaders.findIndex(h => h.includes('备注') || h.includes('说明'))
+  if (dateIndex === -1) throw new Error(`Excel文件缺少“监测日期”列，识别到的表头：${normalizedHeaders.filter(Boolean).join('、') || '（空）'}`)
 
   const pointMapping = {}
   for (const p of pointsByType.value) {
-    const index = headers.findIndex((h) => {
-      const text = String(h || '')
-      return text.includes(p.point_name) || pointNumberToken(text) === pointNumberToken(p.point_name)
-    })
+    const index = headers.findIndex((h) => findPointByImportedName(h)?.id === p.id)
     if (index !== -1) pointMapping[p.id] = index
   }
-  if (Object.keys(pointMapping).length === 0) throw new Error('Excel文件中没有找到匹配的监测点列')
+  if (Object.keys(pointMapping).length === 0) {
+    const importedPoints = normalizedHeaders.filter((_, index) => index !== dateIndex && index !== remarkIndex).filter(Boolean)
+    const systemPoints = pointsByType.value.map(point => point.point_name)
+    throw new Error(`Excel测点与当前边坡不匹配。Excel列：${importedPoints.join('、') || '（空）'}；系统测点：${systemPoints.join('、') || '（当前类型无测点）'}`)
+  }
 
   const newRows = []
-  for (let i = 1; i < jsonData.length; i++) {
+  for (let i = headerRowIndex + 1; i < jsonData.length; i++) {
     const rowData = jsonData[i]
-    if (!rowData[dateIndex]) continue
+    const monitorDate = normalizeMonitorDate(rowData[dateIndex])
+    if (!monitorDate) continue
     const row = makeImportedRow(
-      normalizeMonitorDate(rowData[dateIndex]),
+      monitorDate,
       remarkIndex !== -1 ? (rowData[remarkIndex] || '') : ''
     )
     for (const [pointId, colIndex] of Object.entries(pointMapping)) {
@@ -1675,10 +1799,12 @@ function parseStandardMatrixExcel(jsonData) {
 }
 
 // 处理Excel上传
-function handleExcelUpload(file) {
+async function handleExcelUpload(file) {
   if (uploadProcessing.value) return
   uploadProcessing.value = true
   setUploadProgress(0, '正在读取文件...')
+  // 上传前刷新完整日期清单，避免用旧缓存判断重复日期。
+  await loadExistingSummary()
   const reader = new FileReader()
   reader.onloadstart = () => setUploadProgress(5, '正在读取文件...')
   reader.onprogress = (event) => {
@@ -1688,7 +1814,7 @@ function handleExcelUpload(file) {
     }
     setUploadProgress(5 + (event.loaded / event.total) * 45, `正在读取文件 ${Math.round((event.loaded / event.total) * 100)}%`)
   }
-  reader.onload = (e) => {
+  reader.onload = async (e) => {
     try {
       setUploadProgress(55, '正在解析 Excel...')
       const data = new Uint8Array(e.target.result)
@@ -1699,26 +1825,28 @@ function handleExcelUpload(file) {
 
       const summaryParsed = parseSummaryBlockExcel(jsonData)
       if (summaryParsed) {
-        applyImportedRows(summaryParsed.rows, file, `已识别汇总表格式，匹配 ${summaryParsed.matchedPoints} 个测点，导入`)
+        await applyImportedRows(summaryParsed.rows, file, `已识别汇总表格式，匹配 ${summaryParsed.matchedPoints} 个测点，导入`)
       } else {
         setUploadProgress(92, '正在生成录入矩阵...')
-        applyImportedRows(parseStandardMatrixExcel(jsonData), file)
+        await applyImportedRows(parseStandardMatrixExcel(jsonData), file)
       }
       setUploadProgress(100, '文件解析完成')
     } catch (err) {
       console.error(err)
       ElMessage.error(err.message || 'Excel解析失败，请检查文件格式')
+    } finally {
+      setTimeout(() => {
+        uploadProcessing.value = false
+        uploadProgress.value = 0
+        uploadStatusText.value = ''
+      }, 500)
     }
   }
   reader.onerror = () => {
     ElMessage.error('文件读取失败，请重新选择文件')
-  }
-  reader.onloadend = () => {
-    setTimeout(() => {
-      uploadProcessing.value = false
-      uploadProgress.value = 0
-      uploadStatusText.value = ''
-    }, 500)
+    uploadProcessing.value = false
+    uploadProgress.value = 0
+    uploadStatusText.value = ''
   }
   reader.readAsArrayBuffer(file.raw)
 }
@@ -1916,15 +2044,15 @@ onMounted(() => {
 }
 
 .context-band {
-  padding: 18px 22px 0;
+  padding: 14px 22px 0;
   background: #f7f9fc;
   border-bottom: 1px solid #e4e7ed;
 }
 
 .context-controls {
   display: grid;
-  grid-template-columns: minmax(260px, 360px) minmax(520px, 1fr);
-  gap: 22px;
+  grid-template-columns: minmax(180px, 0.72fr) minmax(260px, 1.3fr) minmax(260px, 1fr);
+  gap: 14px;
   align-items: end;
 }
 
@@ -1941,26 +2069,18 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.type-segments {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(150px, 1fr));
-  gap: 8px;
-}
-
-.type-segments .el-button {
+.type-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
   width: 100%;
-  height: 34px;
-  margin: 0;
 }
 
-.segment-count {
-  min-width: 22px;
-  margin-left: 8px;
-  padding: 1px 5px;
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  font-size: 11px;
-  line-height: 16px;
+.type-option em {
+  color: #909399;
+  font-size: 12px;
+  font-style: normal;
 }
 
 .context-summary {
@@ -2220,6 +2340,20 @@ onMounted(() => {
   font-size: 12px;
 }
 
+.excel-tool-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.import-rule-tip {
+  padding: 8px 16px;
+  border-top: 1px solid #ebeef5;
+  background: #f5f9ff;
+  color: #66798a;
+  font-size: 12px;
+}
+
 .imported-file-panel {
   border: 1px solid #dcdfe6;
 }
@@ -2257,7 +2391,7 @@ onMounted(() => {
 
 .import-summary-strip {
   display: grid;
-  grid-template-columns: 1.5fr 1fr 1fr;
+  grid-template-columns: 1.5fr repeat(3, 1fr);
   border-top: 1px solid #ebeef5;
   border-bottom: 1px solid #ebeef5;
   background: #f7f9fc;
@@ -2552,7 +2686,7 @@ onMounted(() => {
 
 @media (max-width: 1180px) {
   .context-controls {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(160px, 0.75fr) minmax(220px, 1.25fr) minmax(220px, 1fr);
   }
 
   .context-summary {
@@ -2593,7 +2727,7 @@ onMounted(() => {
     padding-left: 14px;
   }
 
-  .type-segments,
+  .context-controls,
   .context-summary,
   .manual-primary-fields,
   .review-summary,

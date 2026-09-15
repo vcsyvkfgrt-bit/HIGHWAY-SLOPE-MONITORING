@@ -4,19 +4,19 @@
       <template #header>
         <div class="page-header">
           <div class="header-title">
-            <h2>Word 模板管理</h2>
-            <p class="subtitle">上传、解析和管理 Word 文档模板</p>
+            <h2>Word / PDF 模板管理</h2>
+            <p class="subtitle">上传、解析和管理 Word、PDF 文档模板，单个文件最大 100MB</p>
           </div>
           <el-button type="primary" @click="showUploadDialog = true">
             <el-icon><Upload /></el-icon>
-            上传新模板
+            上传文档模板
           </el-button>
         </div>
       </template>
 
       <!-- 模板列表 -->
       <div class="template-list">
-        <el-empty v-if="templates.length === 0" description="暂无 Word 模板，请上传新模板">
+        <el-empty v-if="templates.length === 0" description="暂无文档模板，请上传 Word 或 PDF 模板">
           <el-button type="primary" @click="showUploadDialog = true">上传模板</el-button>
         </el-empty>
 
@@ -33,6 +33,7 @@
                         {{ getTypeLabel(template.type) }}
                       </el-tag>
                       <el-tag size="small" effect="plain">v{{ template.version_no || 1 }}</el-tag>
+                      <el-tag size="small" effect="plain">{{ sourceFormatLabel(template) }}</el-tag>
                     </div>
                   </div>
                   <el-dropdown trigger="click">
@@ -96,7 +97,7 @@
     <!-- 上传模板对话框 -->
     <el-dialog
       v-model="showUploadDialog"
-      title="上传 Word 模板"
+      title="上传 Word / PDF 模板"
       width="800px"
       destroy-on-close
     >
@@ -181,6 +182,7 @@
           <el-select v-model="editForm.type" style="width: 100%">
             <el-option label="周报模板" value="weekly" />
             <el-option label="月报模板" value="monthly" />
+            <el-option label="监理例会材料" value="supervision_meeting" />
             <el-option label="自定义模板" value="custom" />
           </el-select>
         </el-form-item>
@@ -252,8 +254,8 @@ const loadTemplates = async () => {
     }
     templates.value = result.data || []
   } catch (error) {
-    console.error('加载 Word 模板失败:', error)
-    ElMessage.error(error.message || '加载 Word 模板失败')
+    console.error('加载文档模板失败:', error)
+    ElMessage.error(error.message || '加载文档模板失败')
   }
 }
 
@@ -261,9 +263,9 @@ const uploadTemplateFile = async (file) => {
   if (!file) return null
 
   const formData = new FormData()
-  formData.append('files', file)
-  formData.append('module', 'word-template')
+  formData.append('module', 'document-template')
   formData.append('business_id', 'template')
+  formData.append('files', file)
 
   const response = await fetch(`${API_DATA}/api/files/upload`, {
     method: 'POST',
@@ -272,7 +274,7 @@ const uploadTemplateFile = async (file) => {
   })
   const result = await response.json()
   if (!result.success) {
-    throw new Error(result.message || 'Word 原文件归档失败')
+    throw new Error(result.message || '文档原文件归档失败')
   }
 
   return result.data?.[0]?.id || null
@@ -281,7 +283,7 @@ const uploadTemplateFile = async (file) => {
 const buildModulesFromStructure = (structure = []) => {
   const headings = structure.filter(item => item.type === 'heading')
   if (!headings.length) {
-    return [{ id: 'word-template-main', name: 'Word 模板正文', children: [] }]
+    return [{ id: 'word-template-main', name: '文档模板正文', children: [] }]
   }
 
   return headings.map((item, index) => ({
@@ -294,6 +296,7 @@ const buildModulesFromStructure = (structure = []) => {
 const buildDataBindings = (placeholders = []) => {
   return placeholders.reduce((bindings, placeholder) => {
     bindings[placeholder.name] = {
+      placeholderKey: placeholder.name,
       field: placeholder.mapping || '',
       type: placeholder.type || 'custom',
       source: placeholder.source || ''
@@ -322,7 +325,10 @@ const handleTemplateSaved = async (templateData) => {
       placeholders: templateData.placeholders || [],
       structure: templateData.structure || [],
       content_text: templateData.content || '',
-      data_bindings: buildDataBindings(templateData.placeholders || [])
+      data_bindings: {
+        ...buildDataBindings(templateData.placeholders || []),
+        __sourceFormat: templateData.sourceFormat || 'docx'
+      }
     }
 
     const response = await fetch(`${API_APP}${TEMPLATES_PATH}`, {
@@ -340,10 +346,10 @@ const handleTemplateSaved = async (templateData) => {
 
     showUploadDialog.value = false
     await loadTemplates()
-    ElMessage.success('Word 模板已保存并归档到后端')
+    ElMessage.success(`${templateData.sourceFormat === 'pdf' ? 'PDF' : 'Word'} 模板已保存并归档`)
   } catch (error) {
-    console.error('保存 Word 模板失败:', error)
-    ElMessage.error(error.message || '保存 Word 模板失败')
+    console.error('保存文档模板失败:', error)
+    ElMessage.error(error.message || '保存文档模板失败')
   }
 }
 
@@ -416,8 +422,34 @@ const useTemplate = (template) => {
 }
 
 // 下载模板
-const downloadTemplate = (template) => {
-  // 导出模板数据为 JSON
+const saveBlob = (blob, fileName) => {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = fileName
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+const downloadTemplate = async (template) => {
+  const sourceFormat = template?.data_bindings?.__sourceFormat
+  if (template.file_asset_id && sourceFormat !== 'pdf') {
+    try {
+      const response = await fetch(`${API_DATA}/api/files/${template.file_asset_id}/download`, { headers: authHeaders() })
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}))
+        throw new Error(result.message || '原始 DOCX 下载失败')
+      }
+      saveBlob(await response.blob(), `${template.name}.docx`)
+      ElMessage.success('原始 DOCX 模板已下载')
+      return
+    } catch (error) {
+      ElMessage.error(error.message || '原始 DOCX 下载失败')
+      return
+    }
+  }
+
+  // PDF 模板和没有原文件的旧模板导出结构化定义
   const templateData = {
     name: template.name,
     description: template.description,
@@ -431,15 +463,8 @@ const downloadTemplate = (template) => {
 
   const jsonString = JSON.stringify(templateData, null, 2)
   const blob = new Blob([jsonString], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `${template.name}-template.json`
-  a.click()
-
-  URL.revokeObjectURL(url)
-  ElMessage.success('模板导出成功')
+  saveBlob(blob, `${template.name}-template.json`)
+  ElMessage.success('模板定义已导出')
 }
 
 // 删除模板
@@ -478,11 +503,17 @@ const formatDate = (dateString) => {
   return date.toLocaleDateString('zh-CN')
 }
 
+const sourceFormatLabel = (template) => {
+  const format = template?.data_bindings?.__sourceFormat
+  return format === 'pdf' ? 'PDF' : 'DOCX'
+}
+
 // 获取类型标签
 const getTypeTag = (type) => {
   const tagMap = {
     weekly: 'success',
     monthly: 'warning',
+    supervision_meeting: 'info',
     custom: ''
   }
   return tagMap[type] || ''
@@ -493,6 +524,7 @@ const getTypeLabel = (type) => {
   const labelMap = {
     weekly: '周报',
     monthly: '月报',
+    supervision_meeting: '监理例会',
     custom: '自定义',
   }
   return labelMap[type] || type
@@ -509,6 +541,7 @@ const getPlaceholderTypeTag = (type) => {
     reportType: 'info',
     chart: 'danger',
     table: 'danger',
+    'section-list': 'warning',
     data: 'warning',
     custom: ''
   }
@@ -526,6 +559,7 @@ const getPlaceholderTypeLabel = (type) => {
     reportType: '报告类型',
     chart: '图表',
     table: '表格',
+    'section-list': '分章节',
     data: '数据',
     custom: '自定义',
   }

@@ -140,9 +140,7 @@
         </el-form-item>
         <el-form-item label="监测点类型">
           <el-select v-model="form.point_type" placeholder="选择监测点类型">
-            <el-option label="地表位移监测点" value="地表位移监测点" />
-            <el-option label="沉降监测点" value="沉降监测点" />
-            <el-option label="深部位移测斜孔" value="深部位移测斜孔" />
+            <el-option v-for="type in POINT_TYPES" :key="type" :label="type" :value="type" />
           </el-select>
         </el-form-item>
         <el-form-item label="布点图片">
@@ -193,9 +191,7 @@
         </el-form-item>
         <el-form-item label="监测点类型" required>
           <el-select v-model="batchAddForm.point_type" placeholder="选择监测点类型">
-            <el-option label="地表位移监测点" value="地表位移监测点" />
-            <el-option label="沉降监测点" value="沉降监测点" />
-            <el-option label="深部位移测斜孔" value="深部位移测斜孔" />
+            <el-option v-for="type in POINT_TYPES" :key="type" :label="type" :value="type" />
           </el-select>
         </el-form-item>
         <el-form-item label="布点图片">
@@ -312,10 +308,12 @@ const batchAddForm = reactive({
   photo: ''
 })
 
-const POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔']
+const POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔', '裂缝观测点', '锚索应力监测点']
 const POINT_TYPE_META = {
   地表位移监测点: { shortLabel: '地表位移/沉降点', color: '#409eff' },
   深部位移测斜孔: { shortLabel: '深部测斜孔', color: '#e6a23c' },
+  裂缝观测点: { shortLabel: '裂缝观测', color: '#b36bce' },
+  锚索应力监测点: { shortLabel: '锚索应力', color: '#1aa6a6' },
 }
 const SHARED_SURFACE_TYPES = new Set(['地表位移监测点', '沉降监测点', 'surface'])
 
@@ -703,6 +701,8 @@ const POINT_TYPE_PREFIX = {
   地表位移监测点: 'BP',
   沉降监测点: 'CJ',
   深部位移测斜孔: 'LC',
+  裂缝观测点: 'LF',
+  锚索应力监测点: 'MS',
 }
 
 const getPointNamePrefix = (slope, pointType) => {

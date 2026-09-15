@@ -9,10 +9,11 @@ const errorHandler = require('./middleware/errorHandler')
 
 function createApp() {
   const app = express()
+  const jsonBodyLimit = process.env.JSON_BODY_LIMIT || '100mb'
 
   app.use(cors({ origin: true, credentials: true }))
-  app.use(express.json({ limit: '50mb' }))
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }))
+  app.use(express.json({ limit: jsonBodyLimit }))
+  app.use(express.urlencoded({ extended: true, limit: jsonBodyLimit }))
   app.use('/uploads', express.static(path.join(__dirname, 'uploads')))
   app.use(attachApiResponse)
   app.use(operationLog)

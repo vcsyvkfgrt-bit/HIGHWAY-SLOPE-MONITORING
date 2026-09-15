@@ -22,7 +22,24 @@
 
       <el-form :model="selectionForm" label-width="90px" class="range-form">
         <el-row :gutter="16">
-          <el-col :xs="24" :md="10">
+          <el-col :xs="24" :md="5">
+            <el-form-item label="所属标段">
+              <el-select
+                v-model="selectionForm.sections"
+                multiple
+                clearable
+                filterable
+                collapse-tags
+                collapse-tags-tooltip
+                placeholder="全部标段"
+                style="width: 100%"
+                @change="handleSectionChange"
+              >
+                <el-option v-for="section in sections" :key="section" :label="section" :value="section" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :xs="24" :md="7">
             <el-form-item label="选择边坡" required>
               <el-select
                 v-model="selectionForm.slopeIds"
@@ -35,18 +52,18 @@
                 @change="loadSelectedSlopeData"
               >
                 <el-option
-                  v-for="slope in slopes"
+                  v-for="slope in filteredSlopes"
                   :key="slope.id"
-                  :label="slope.slope_name"
+                  :label="`${slope.section || '未分标段'} · ${slope.slope_name}`"
                   :value="slope.id"
                 >
-                  <span>{{ slope.slope_name }}</span>
+                  <span>{{ slope.section || '未分标段' }} · {{ slope.slope_name }}</span>
                   <span class="option-meta">{{ slope.slope_type || '-' }} / {{ slope.point_count || 0 }} 点</span>
                 </el-option>
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :xs="24" :md="7">
+          <el-col :xs="24" :md="6">
             <el-form-item label="监测类型">
               <el-select
                 v-model="selectionForm.monitoringTypes"
@@ -59,10 +76,12 @@
                 <el-option label="地表位移监测点" value="地表位移监测点" />
                 <el-option label="沉降监测点" value="沉降监测点" />
                 <el-option label="深部位移测斜孔" value="深部位移测斜孔" />
+                <el-option label="裂缝观测点" value="裂缝观测点" />
+                <el-option label="锚索应力监测点" value="锚索应力监测点" />
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :xs="24" :md="7">
+          <el-col :xs="24" :md="6">
             <el-form-item label="时间范围">
               <el-date-picker
                 v-model="selectionForm.dateRange"
@@ -80,6 +99,9 @@
       </el-form>
 
       <div class="toolbar">
+        <el-button :disabled="filteredSlopes.length === 0" @click="selectAllFilteredSlopes">
+          选择当前标段全部边坡
+        </el-button>
         <el-button type="primary" :loading="loadingData" @click="loadSelectedSlopeData">
           <el-icon><Search /></el-icon>
           查询数据
@@ -95,12 +117,24 @@
       </div>
 
       <el-table :data="slopeSummaries" border stripe class="summary-table" v-loading="loadingData">
+        <el-table-column prop="section" label="标段" width="130" />
         <el-table-column prop="slopeName" label="边坡名称" min-width="180" />
         <el-table-column prop="slopeType" label="边坡类型" width="130" />
         <el-table-column prop="pointCount" label="测点数" width="90" align="center" />
         <el-table-column prop="dataCount" label="已加载数据" width="120" align="center" />
         <el-table-column prop="typeSummary" label="涉及监测类型" min-width="180" />
         <el-table-column prop="dateRange" label="数据日期范围" width="220" />
+        <el-table-column label="是否保留" width="120" align="center" fixed="right">
+          <template #default="scope">
+            <el-switch
+              :model-value="true"
+              inline-prompt
+              active-text="保留"
+              :disabled="loadingData"
+              @change="value => changeSlopeRetention(scope.row.slopeId, value)"
+            />
+          </template>
+        </el-table-column>
       </el-table>
 
       <el-empty
@@ -116,6 +150,9 @@
           <span>{{ selectedSlopes.length }} 个边坡，{{ selectedData.length }} 条真实监测数据</span>
         </div>
         <el-descriptions :column="2" border>
+          <el-descriptions-item label="标段">
+            {{ selectedSectionNames.join('、') || '全部标段' }}
+          </el-descriptions-item>
           <el-descriptions-item label="边坡">
             {{ selectedSlopes.map((item) => item.slope_name).join('、') }}
           </el-descriptions-item>
@@ -168,8 +205,10 @@ const slopes = ref([])
 const selectedData = ref([])
 const loadingData = ref(false)
 const submitting = ref(false)
+const DEEP_MONITOR_TYPE = '深部位移测斜孔'
 
 const selectionForm = reactive({
+  sections: [],
   slopeIds: [],
   monitoringTypes: ['地表位移监测点', '沉降监测点'],
   dateRange: [],
@@ -178,6 +217,14 @@ const selectionForm = reactive({
 const selectedSlopes = computed(() => {
   const selectedIds = new Set(selectionForm.slopeIds.map((id) => Number(id)))
   return slopes.value.filter((slope) => selectedIds.has(Number(slope.id)))
+})
+
+const sections = computed(() => [...new Set(slopes.value.map((item) => item.section).filter(Boolean))])
+const selectedSectionNames = computed(() => [...new Set(selectedSlopes.value.map((item) => item.section).filter(Boolean))])
+const filteredSlopes = computed(() => {
+  if (!selectionForm.sections.length) return slopes.value
+  const allowedSections = new Set(selectionForm.sections)
+  return slopes.value.filter((slope) => allowedSections.has(slope.section))
 })
 
 const displayDateRange = computed(() => {
@@ -191,6 +238,8 @@ const slopeSummaries = computed(() => {
     const dates = [...new Set(rows.map((item) => item.monitorDate).filter(Boolean))].sort()
     const types = [...new Set(rows.map((item) => item.monitoringType).filter(Boolean))]
     return {
+      slopeId: slope.id,
+      section: slope.section || '-',
       slopeName: slope.slope_name,
       slopeType: slope.slope_type || '-',
       pointCount: slope.point_count || 0,
@@ -222,9 +271,10 @@ function mapBackendRowToWorkflowItem(row) {
     monitorDate,
     monitorTime,
     value: row.value,
+    relativeValue: row.max_relative ?? null,
     unit: row.unit || 'mm',
     remark: row.remark,
-    source: 'backend_history',
+    source: row.monitor_type === DEEP_MONITOR_TYPE ? 'inclinometer_surveys' : 'backend_history',
   }
 }
 
@@ -254,6 +304,21 @@ async function fetchMonitoringRowsBySlope(slopeId) {
   return (result.data || []).map(mapBackendRowToWorkflowItem)
 }
 
+async function fetchInclinometerRowsBySlope(slopeId) {
+  const params = new URLSearchParams({
+    slope_id: String(slopeId),
+    point_type: DEEP_MONITOR_TYPE,
+    all_history: 'true',
+  })
+  if (selectionForm.dateRange?.[0]) params.set('from', selectionForm.dateRange[0])
+  if (selectionForm.dateRange?.[1]) params.set('to', selectionForm.dateRange[1])
+
+  const response = await fetch(`${API_DATA}/api/monitoring-data/overview/trends?${params.toString()}`)
+  const result = await response.json()
+  if (!result?.success) throw new Error(result?.message || '加载深部测斜数据失败')
+  return (result.data || []).map(mapBackendRowToWorkflowItem)
+}
+
 async function loadSelectedSlopeData() {
   if (selectionForm.slopeIds.length === 0) {
     selectedData.value = []
@@ -262,8 +327,15 @@ async function loadSelectedSlopeData() {
 
   loadingData.value = true
   try {
-    const rowsGroup = await Promise.all(selectionForm.slopeIds.map((slopeId) => fetchMonitoringRowsBySlope(slopeId)))
     const typeSet = new Set(selectionForm.monitoringTypes)
+    const includeAllTypes = typeSet.size === 0
+    const needsDeepData = includeAllTypes || typeSet.has(DEEP_MONITOR_TYPE)
+    const needsRegularData = includeAllTypes || [...typeSet].some(type => type !== DEEP_MONITOR_TYPE)
+    const requests = selectionForm.slopeIds.flatMap((slopeId) => [
+      ...(needsRegularData ? [fetchMonitoringRowsBySlope(slopeId)] : []),
+      ...(needsDeepData ? [fetchInclinometerRowsBySlope(slopeId)] : []),
+    ])
+    const rowsGroup = await Promise.all(requests)
     selectedData.value = rowsGroup
       .flat()
       .filter((item) => typeSet.size === 0 || typeSet.has(item.monitoringType))
@@ -277,10 +349,33 @@ async function loadSelectedSlopeData() {
 }
 
 function resetSelection() {
+  selectionForm.sections = []
   selectionForm.slopeIds = []
   selectionForm.monitoringTypes = ['地表位移监测点', '沉降监测点']
   selectionForm.dateRange = []
   selectedData.value = []
+}
+
+function handleSectionChange() {
+  const allowedIds = new Set(filteredSlopes.value.map((slope) => Number(slope.id)))
+  selectionForm.slopeIds = selectionForm.slopeIds.filter((id) => allowedIds.has(Number(id)))
+  loadSelectedSlopeData()
+}
+
+function selectAllFilteredSlopes() {
+  selectionForm.slopeIds = [...new Set([
+    ...selectionForm.slopeIds,
+    ...filteredSlopes.value.map((slope) => slope.id),
+  ])]
+  loadSelectedSlopeData()
+}
+
+function changeSlopeRetention(slopeId, retained) {
+  if (retained) return
+  const slope = slopes.value.find(item => Number(item.id) === Number(slopeId))
+  selectionForm.slopeIds = selectionForm.slopeIds.filter(id => Number(id) !== Number(slopeId))
+  selectedData.value = selectedData.value.filter(item => Number(item.slopeId) !== Number(slopeId))
+  ElMessage.success(`已从本次报告范围移除“${slope?.slope_name || '该边坡'}”，可在上方重新选择`)
 }
 
 function navigateToDataEntry() {
@@ -306,6 +401,7 @@ async function submitData() {
     selectedSlopes: selectedSlopes.value.map((slope) => ({
       id: slope.id,
       slope_name: slope.slope_name,
+      section: slope.section,
       slope_type: slope.slope_type,
       point_count: slope.point_count,
     })),
@@ -314,6 +410,14 @@ async function submitData() {
     dateRange: [...(selectionForm.dateRange || [])],
     selectedData: [...selectedData.value],
     submitTime: new Date().toISOString(),
+  }
+  props.workflowData.scope = {
+    sections: [...selectedSectionNames.value],
+    section: selectedSectionNames.value.length === 1 ? selectedSectionNames.value[0] : '',
+    slopeIds: [...selectionForm.slopeIds],
+    monitoringTypes: [...selectionForm.monitoringTypes],
+    dateRange: [...(selectionForm.dateRange || [])],
+    cutoff: selectionForm.dateRange?.[1] || new Date().toISOString().slice(0, 10),
   }
 
   submitting.value = false
@@ -325,6 +429,9 @@ onMounted(async () => {
   await loadSlopes()
   const previous = props.workflowData?.dataEntry
   if (previous?.selectionMode === 'slope') {
+    selectionForm.sections = props.workflowData?.scope?.sections?.length
+      ? [...props.workflowData.scope.sections]
+      : (props.workflowData?.scope?.section ? [props.workflowData.scope.section] : [])
     selectionForm.slopeIds = previous.selectedSlopeIds || []
     selectionForm.monitoringTypes = previous.monitoringTypes || ['地表位移监测点', '沉降监测点']
     selectionForm.dateRange = previous.dateRange || []

@@ -2,7 +2,7 @@ const express = require('express')
 const router = express.Router()
 const pool = require('../config/database')
 
-const ALLOWED_POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔', 'surface', 'deep', 'stress', 'water']
+const ALLOWED_POINT_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔', '裂缝观测点', '锚索应力计', '锚索应力监测点', 'surface', 'deep', 'stress', 'water']
 
 // 获取所有监测点
 router.get('/', async (req, res) => {

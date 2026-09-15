@@ -562,6 +562,57 @@ router.put('/surveys/:id', auth, async (req, res) => {
   }
 })
 
+router.delete('/surveys/:id', auth, async (req, res) => {
+  await ensureSchema()
+  const conn = await pool.getConnection()
+
+  try {
+    const surveyId = Number(req.params.id)
+    if (!surveyId) return res.status(400).json({ success: false, message: '缺少观测期 id' })
+
+    const [surveyRows] = await conn.query(
+      `SELECT s.id, s.point_id, s.survey_no, DATE_FORMAT(s.survey_date, '%Y-%m-%d') AS survey_date, p.point_name
+       FROM inclinometer_surveys s
+       JOIN monitoring_points p ON p.id = s.point_id
+       WHERE s.id = ?`,
+      [surveyId]
+    )
+    if (surveyRows.length === 0) {
+      return res.status(404).json({ success: false, message: '观测期数据不存在' })
+    }
+
+    const survey = surveyRows[0]
+    const { error } = await getDeepPoint(conn, survey.point_id)
+    if (error) return res.status(error[0]).json({ success: false, message: error[1] })
+
+    await conn.beginTransaction()
+    const [result] = await conn.query('DELETE FROM inclinometer_surveys WHERE id = ?', [surveyId])
+    await conn.commit()
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ success: false, message: '观测期数据不存在' })
+    }
+
+    res.json({
+      success: true,
+      message: '测斜观测期数据已删除',
+      data: {
+        survey_id: surveyId,
+        point_id: survey.point_id,
+        point_name: survey.point_name,
+        survey_no: survey.survey_no,
+        survey_date: survey.survey_date,
+      },
+    })
+  } catch (error) {
+    await conn.rollback()
+    console.error('删除测斜观测期数据失败:', error)
+    res.status(500).json({ success: false, message: '删除测斜观测期数据失败' })
+  } finally {
+    conn.release()
+  }
+})
+
 router.get('/profile', async (req, res) => {
   try {
     await ensureSchema()

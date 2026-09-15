@@ -32,6 +32,7 @@
           <el-select v-model="templateForm.type" style="width: 200px">
             <el-option label="周报模板" value="weekly" />
             <el-option label="月报模板" value="monthly" />
+            <el-option label="监理例会材料" value="supervision_meeting" />
             <el-option label="自定义模板" value="custom" />
           </el-select>
         </el-form-item>
@@ -247,7 +248,10 @@
                       <el-form-item label="数据类型" class="child-form-item">
                         <el-select v-model="child.monitoringType" style="width: 150px;">
                           <el-option label="表面位移" value="surface" />
+                          <el-option label="沉降监测" value="settlement" />
                           <el-option label="深部位移" value="deep" />
+                          <el-option label="裂缝观测" value="crack" />
+                          <el-option label="锚索应力" value="anchor-stress" />
                           <el-option label="降雨量" value="rainfall" />
                           <el-option label="地下水位" value="groundwater" />
                         </el-select>
@@ -404,7 +408,10 @@ const businessDataSources = [
   { value: 'inclinometer_data', label: '深部测斜数据' },
   { value: 'inspections', label: '巡检记录' },
   { value: 'alarms', label: '预警记录' },
-  { value: 'slope_ledger_map', label: '监测布点图' }
+  { value: 'slope_ledger_map', label: '监测布点图' },
+  { value: 'weather_rainfall', label: '天气与雨量' },
+  { value: 'map_overview', label: '边坡空间位置' },
+  { value: 'supervision_meeting', label: '监理例会材料' }
 ]
 const standardPlaceholders = ref([])
 

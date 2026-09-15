@@ -2,12 +2,16 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
 const auth = require('../middleware/auth');
+const { resolveUploadedTemplate, validateWordTemplateFile } = require('../utils/wordTemplateRenderer');
 
 const STANDARD_PLACEHOLDERS = [
   { key: '{报告标题}', field: 'title', type: 'text', label: '报告标题', source: 'report', description: '当前报告标题' },
   { key: '{报告类型}', field: 'reportType', type: 'text', label: '报告类型', source: 'report', description: '周报、月报或自定义报告' },
   { key: '{报告日期}', field: 'reportDate', type: 'date', label: '报告日期', source: 'report', description: '报告编制日期' },
   { key: '{统计月份}', field: 'reportMonth', type: 'month', label: '统计月份', source: 'report', description: '报告统计月份' },
+  { key: '{汇报月份}', field: 'meetingMonth', type: 'month', label: '汇报月份', source: 'report', description: '监理例会材料所属月份' },
+  { key: '{统计截止日期}', field: 'cutoffDate', type: 'date', label: '统计截止日期', source: 'report', description: '监理例会材料统计截止日期' },
+  { key: '{监理例会标题}', field: 'supervisionMeetingTitle', type: 'text', label: '监理例会标题', source: 'report', description: '监理例会汇报材料标题' },
   { key: '{编制人}', field: 'author', type: 'user', label: '编制人', source: 'report', description: '报告编制人' },
   { key: '{审核人}', field: 'reviewer', type: 'user', label: '审核人', source: 'report', description: '报告审核人' },
   { key: '{标段}', field: 'section', type: 'text', label: '标段', source: 'slope', description: '当前筛选标段或边坡所属标段' },
@@ -17,10 +21,25 @@ const STANDARD_PLACEHOLDERS = [
   { key: '{地表位移趋势图}', field: 'surfaceTrendChart', type: 'chart', label: '地表位移趋势图', source: 'monitoring_data', description: '地表位移监测数据趋势图' },
   { key: '{深部测斜曲线}', field: 'inclinometerProfileChart', type: 'chart', label: '深部测斜曲线', source: 'inclinometer_data', description: '深部位移测斜累计/相对位移曲线' },
   { key: '{地表位移统计表}', field: 'surfaceSummaryTable', type: 'table', label: '地表位移统计表', source: 'monitoring_data', description: '地表位移本期统计表' },
+  { key: '{平均监测频率统计}', field: 'frequencySummaryTable', type: 'table', label: '平均监测频率统计', source: 'monitoring_data', description: '按测点统计相邻有效观测日期的平均间隔' },
+  { key: '{变化速率图}', field: 'monitoringRateChart', type: 'chart', label: '变化速率图', source: 'monitoring_data', description: '相邻两期变化速率及2mm/d参考线' },
+  { key: '{雨量位移叠加图}', field: 'rainfallOverlayChart', type: 'chart', label: '雨量位移叠加图', source: 'weather_rainfall', description: '报告期日雨量与监测值时间叠加' },
   { key: '{巡检问题汇总}', field: 'inspectionProblems', type: 'table', label: '巡检问题汇总', source: 'inspections', description: '边坡巡检问题汇总' },
   { key: '{预警处置记录}', field: 'alarmActions', type: 'table', label: '预警处置记录', source: 'alarms', description: '报警与处置记录' },
   { key: '{监测布点图}', field: 'layoutMap', type: 'image', label: '监测布点图', source: 'slope_ledger', description: '边坡当前监测布点图' },
+  { key: '{边坡空间位置表}', field: 'geoLocationTable', type: 'table', label: '边坡空间位置表', source: 'map_overview', description: '边坡经纬度、坐标系及精度说明' },
   { key: '{监测结论}', field: 'monitorConclusion', type: 'text', label: '监测结论', source: 'report', description: '报告结论段落' },
+  { key: '{监测对象概况表}', field: 'meetingOverviewTable', type: 'table', label: '监测对象概况表', source: 'supervision_meeting', description: '监理例会材料中的高边坡施工现状及监测工作进展表' },
+  { key: '{本月监测进展清单}', field: 'meetingProgressList', type: 'table', label: '本月监测进展清单', source: 'supervision_meeting', description: '按边坡汇总本月已布点和测斜数量' },
+  { key: '{本月监测进展}', field: 'meetingProgressText', type: 'text', label: '本月监测进展', source: 'supervision_meeting', description: '按边坡生成的本月监测进展文字' },
+  { key: '{分边坡监测进展}', field: 'meetingSlopeSections', type: 'section-list', label: '分边坡监测进展', source: 'supervision_meeting', description: '按边坡循环生成地表变形、变化速率、深部测斜和分析文字' },
+  { key: '{单边坡地表变形图}', field: 'meetingSlopeSections', type: 'chart', label: '单边坡地表变形图', source: 'supervision_meeting', description: '分边坡章节中的地表累计变形曲线' },
+  { key: '{单边坡深部测斜图}', field: 'meetingSlopeSections', type: 'chart', label: '单边坡深部测斜图', source: 'supervision_meeting', description: '分边坡章节中的深部水平位移测斜曲线' },
+  { key: '{单边坡监测分析}', field: 'meetingSlopeSections', type: 'text', label: '单边坡监测分析', source: 'supervision_meeting', description: '分边坡章节中的自动分析段落' },
+  { key: '{月度监测结论}', field: 'meetingConclusion', type: 'text', label: '月度监测结论', source: 'supervision_meeting', description: '监理例会材料监测结论初稿' },
+  { key: '{月度工作建议}', field: 'meetingSuggestions', type: 'text', label: '月度工作建议', source: 'supervision_meeting', description: '监理例会材料工作建议初稿' },
+  { key: '{第3节监测结论初稿}', field: 'meetingConclusion', type: 'text', label: '第3节监测结论初稿', source: 'supervision_meeting', description: '基于监测数据、变化速率、巡检问题和预警记录自动生成，可人工确认修改' },
+  { key: '{第4节工作建议初稿}', field: 'meetingSuggestions', type: 'text', label: '第4节工作建议初稿', source: 'supervision_meeting', description: '基于风险点、巡检问题、预警记录和雨量情况自动生成，可人工确认修改' },
 ]
 
 function parseJson(value, fallback) {
@@ -197,6 +216,27 @@ router.post('/', auth, async (req, res) => {
         success: false,
         error: '模板名称和模块内容不能为空'
       });
+    }
+
+    if (template_kind === 'word' && data_bindings?.__sourceFormat !== 'pdf') {
+      if (!file_asset_id) {
+        return res.status(400).json({ success: false, error: 'DOCX 模板缺少原文件，请重新上传' })
+      }
+      const [[asset]] = await conn.execute(
+        'SELECT file_path FROM file_assets WHERE id = ? AND module = ?',
+        [file_asset_id, 'document-template']
+      )
+      if (!asset) {
+        return res.status(400).json({ success: false, error: 'DOCX 模板原文件不存在，请重新上传' })
+      }
+      try {
+        await validateWordTemplateFile(resolveUploadedTemplate(asset.file_path))
+      } catch (validationError) {
+        return res.status(400).json({
+          success: false,
+          error: validationError?.message || 'Word 模板指令校验失败',
+        })
+      }
     }
 
     await conn.beginTransaction()

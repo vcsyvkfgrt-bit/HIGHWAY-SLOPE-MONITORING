@@ -84,6 +84,11 @@
           <el-table-column prop="end_stake" label="结束桩号" width="120" align="center" />
           <el-table-column prop="slope_type" label="边坡类型" width="100" align="center" />
           <el-table-column prop="max_height" label="最大坡高 (m)" width="120" align="center" />
+          <el-table-column label="例会概况" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }">
+              <span class="meeting-summary">{{ meetingSummary(row) }}</span>
+            </template>
+          </el-table-column>
           <el-table-column prop="point_count" label="测点数量" width="100" align="center" />
           <el-table-column prop="contact_person" label="责任人" show-overflow-tooltip align="center" />
           <el-table-column prop="created_at" label="创建时间" width="180" align="center" />
@@ -107,7 +112,7 @@
     <el-dialog
       v-model="dialogVisible"
       :title="dialogTitle"
-      width="500px"
+      width="760px"
       destroy-on-close
     >
       <el-form ref="formRef" :model="form" :rules="formRules" label-width="110px">
@@ -136,6 +141,65 @@
         <el-form-item label="最大坡高 (m)">
           <el-input v-model="form.max_height" type="number" placeholder="请输入最大坡高" />
         </el-form-item>
+        <div class="form-section">
+          <div class="form-section__title">监理例会概况</div>
+          <div class="form-section__desc">用于自动生成“施工与监控概况表”；不填写时系统会用已维护测点数量兜底。</div>
+          <div class="form-grid">
+            <el-form-item label="边坡长度 (m)">
+              <el-input v-model="form.slope_length" type="number" placeholder="如 237.87" />
+            </el-form-item>
+            <el-form-item label="位置">
+              <el-select v-model="form.slope_position" placeholder="选择或输入位置" filterable allow-create clearable>
+                <el-option v-for="item in SLOPE_POSITIONS" :key="item" :label="item" :value="item" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="位移桩 (个)">
+              <el-input v-model="form.design_displacement_piles" type="number" min="0" placeholder="设计/计划数量" />
+            </el-form-item>
+            <el-form-item label="沉降板 (个)">
+              <el-input v-model="form.design_settlement_plates" type="number" min="0" placeholder="设计/计划数量" />
+            </el-form-item>
+            <el-form-item label="锚测力计 (个)">
+              <el-input v-model="form.design_anchor_dynamometers" type="number" min="0" placeholder="设计/计划数量" />
+            </el-form-item>
+            <el-form-item label="测斜管 (m)">
+              <el-input v-model="form.design_inclinometer_length" type="number" min="0" placeholder="设计/计划长度" />
+            </el-form-item>
+            <el-form-item label="施工状态">
+              <el-select v-model="form.construction_status" placeholder="选择或输入施工状态" filterable allow-create clearable>
+                <el-option v-for="item in CONSTRUCTION_STATUS_OPTIONS" :key="item" :label="item" :value="item" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="例会排序">
+              <el-input v-model="form.meeting_display_order" type="number" min="0" placeholder="数字越小越靠前" />
+            </el-form-item>
+          </div>
+          <el-form-item label="工作进展">
+            <el-input
+              v-model="form.meeting_work_progress"
+              type="textarea"
+              :rows="2"
+              maxlength="255"
+              show-word-limit
+              placeholder="如：本月已完成布点并开展常规监测；或填写施工、监测同步进展"
+            />
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input
+              v-model="form.meeting_remark"
+              maxlength="255"
+              show-word-limit
+              placeholder="如：顺层岩质边坡、重点跟踪、暂缓施工等"
+            />
+          </el-form-item>
+          <el-form-item label="纳入例会">
+            <el-switch
+              v-model="form.include_in_meeting"
+              active-text="纳入"
+              inactive-text="暂不纳入"
+            />
+          </el-form-item>
+        </div>
         <el-form-item label="责任人/联系人">
           <el-input v-model="form.contact_person" placeholder="请输入责任人/联系人" />
         </el-form-item>
@@ -181,6 +245,8 @@ const submitting = ref(false)
 const formRef = ref(null)
 const SLOPE_TYPES = ['滑坡', '崩塌', '泥石流', '深挖路堑', '高填方', '其他']
 const GEOLOGICAL_TYPES = new Set(['滑坡', '崩塌', '泥石流'])
+const SLOPE_POSITIONS = ['左幅', '右幅', '左侧', '右侧', '路基左侧', '路基右侧', '桥台', '匝道', '中线']
+const CONSTRUCTION_STATUS_OPTIONS = ['暂未施工', '施工中', '已布点监测', '防护施工中', '已完成防护', '暂停施工', '重点跟踪']
 
 const sectionOptions = computed(() => {
   return [...new Set(slopes.value.map((slope) => slope.section).filter(Boolean))]
@@ -219,6 +285,17 @@ const form = reactive({
   end_stake: '',
   slope_type: '滑坡',
   max_height: '',
+  slope_length: '',
+  slope_position: '',
+  design_displacement_piles: '',
+  design_settlement_plates: '',
+  design_anchor_dynamometers: '',
+  design_inclinometer_length: '',
+  construction_status: '',
+  meeting_work_progress: '',
+  meeting_remark: '',
+  include_in_meeting: true,
+  meeting_display_order: '',
   contact_person: '',
   description: ''
 })
@@ -237,6 +314,17 @@ const resetForm = () => {
   form.end_stake = ''
   form.slope_type = '滑坡'
   form.max_height = ''
+  form.slope_length = ''
+  form.slope_position = ''
+  form.design_displacement_piles = ''
+  form.design_settlement_plates = ''
+  form.design_anchor_dynamometers = ''
+  form.design_inclinometer_length = ''
+  form.construction_status = ''
+  form.meeting_work_progress = ''
+  form.meeting_remark = ''
+  form.include_in_meeting = true
+  form.meeting_display_order = ''
   form.contact_person = ''
   form.description = ''
   formRef.value?.clearValidate()
@@ -250,8 +338,30 @@ const fillForm = (row) => {
   form.end_stake = row.end_stake || ''
   form.slope_type = row.slope_type || '滑坡'
   form.max_height = row.max_height ?? ''
+  form.slope_length = row.slope_length ?? ''
+  form.slope_position = row.slope_position || ''
+  form.design_displacement_piles = row.design_displacement_piles ?? ''
+  form.design_settlement_plates = row.design_settlement_plates ?? ''
+  form.design_anchor_dynamometers = row.design_anchor_dynamometers ?? ''
+  form.design_inclinometer_length = row.design_inclinometer_length ?? ''
+  form.construction_status = row.construction_status || ''
+  form.meeting_work_progress = row.meeting_work_progress || ''
+  form.meeting_remark = row.meeting_remark || ''
+  form.include_in_meeting = row.include_in_meeting !== 0
+  form.meeting_display_order = row.meeting_display_order ?? ''
   form.contact_person = row.contact_person || ''
   form.description = row.description || ''
+}
+
+const meetingSummary = (row) => {
+  const parts = []
+  const length = Number(row.slope_length) > 0 ? row.slope_length : ''
+  const height = Number(row.max_height) > 0 ? row.max_height : ''
+  if (length || height) parts.push(`长/高 ${length || '-'} / ${height || '-'}m`)
+  if (row.slope_position) parts.push(row.slope_position)
+  if (row.construction_status) parts.push(row.construction_status)
+  if (row.meeting_work_progress) parts.push(row.meeting_work_progress)
+  return parts.join('，') || '未维护'
 }
 
 // 加载边坡列表
@@ -357,6 +467,17 @@ const handleSubmit = async () => {
       end_stake: form.end_stake || null,
       slope_type: form.slope_type || '滑坡',
       max_height: form.max_height === '' ? null : form.max_height,
+      slope_length: form.slope_length === '' ? null : form.slope_length,
+      slope_position: form.slope_position || null,
+      design_displacement_piles: form.design_displacement_piles === '' ? null : form.design_displacement_piles,
+      design_settlement_plates: form.design_settlement_plates === '' ? null : form.design_settlement_plates,
+      design_anchor_dynamometers: form.design_anchor_dynamometers === '' ? null : form.design_anchor_dynamometers,
+      design_inclinometer_length: form.design_inclinometer_length === '' ? null : form.design_inclinometer_length,
+      construction_status: form.construction_status || null,
+      meeting_work_progress: form.meeting_work_progress || null,
+      meeting_remark: form.meeting_remark || null,
+      include_in_meeting: form.include_in_meeting,
+      meeting_display_order: form.meeting_display_order === '' ? null : form.meeting_display_order,
       contact_person: form.contact_person || null,
       description: form.description || null
     }
@@ -533,6 +654,42 @@ onMounted(() => {
   font-size: 13px;
 }
 
+.meeting-summary {
+  color: #606266;
+  font-size: 13px;
+}
+
+.form-section {
+  margin: 12px 0 18px;
+  padding: 14px 16px 4px;
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fafcff;
+}
+
+.form-section__title {
+  color: #303133;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.form-section__desc {
+  margin: 4px 0 14px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 14px;
+}
+
+.form-grid :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+
 @media (max-width: 900px) {
   .overview-metrics {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
@@ -544,6 +701,10 @@ onMounted(() => {
 
   .metric-item:nth-child(odd) {
     padding-left: 0;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

@@ -24,6 +24,8 @@ server_error.log
 
 # Uploads and generated artifacts
 backend/uploads/
+.codex-temp/
+outputs/
 converted_monitoring_excels/
 converted_monitoring_excels_cli_check/
 converted_monitoring_excels_segment_test/

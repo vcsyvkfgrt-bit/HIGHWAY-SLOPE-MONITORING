@@ -72,12 +72,14 @@
           </div>
         </div>
 
+        
         <section class="ranking-board" v-if="hasRankingData">
           <div class="section-heading">
             <div>
               <h3>变化最大测点</h3>
               <p>按相邻两个有效监测日期的绝对变化量排序</p>
             </div>
+            <span class="compact-note">点击数值可查看详情</span>
           </div>
           <div class="ranking-columns">
             <div v-for="type in visibleRankingTypes" :key="type" class="ranking-column">
@@ -125,6 +127,14 @@
             <el-table-column prop="slope_name" label="边坡名称" min-width="180" show-overflow-tooltip />
             <el-table-column prop="section" label="标段" min-width="130" show-overflow-tooltip />
             <el-table-column prop="total_points" label="实体测点" width="95" align="center" />
+            <el-table-column label="平均监测频率" width="125" align="center">
+              <template #default="scope">
+                <span v-if="scope.row.avg_monitor_interval_days !== null && scope.row.avg_monitor_interval_days !== undefined">
+                  {{ formatFrequency(scope.row.avg_monitor_interval_days) }} 天
+                </span>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
             <el-table-column prop="missing_points" label="未更新" width="85" align="center">
               <template #default="scope">
                 <span :class="{ 'text-warning': scope.row.missing_points > 0 }">{{ scope.row.missing_points }}</span>
@@ -318,11 +328,13 @@ const props = defineProps({
 const emit = defineEmits(['next', 'prev'])
 const route = useRoute()
 
-const MONITOR_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔']
+const MONITOR_TYPES = ['地表位移监测点', '沉降监测点', '深部位移测斜孔', '裂缝观测点', '锚索应力监测点']
 const TYPE_COLORS = {
   地表位移监测点: '#409eff',
   沉降监测点: '#67c23a',
   深部位移测斜孔: '#e6a23c',
+  裂缝观测点: '#b36bce',
+  锚索应力监测点: '#1aa6a6',
 }
 const FILTER_STORAGE_KEY = 'dataViewOverviewFilters'
 
@@ -337,6 +349,12 @@ const loading = ref(false)
 const slopes = ref([])
 const overview = reactive({
   summary: { slope_count: 0, point_count: 0, missing_count: 0, alarm_count: 0 },
+  frequency: {
+    cutoff: '',
+    definition: '同一测点相邻两次有效观测日期的平均间隔；无两期数据的测点不参与间隔计算',
+    summary: { avg_interval_days: null, observations_per_point: 0, point_count: 0, observation_days: 0 },
+    by_type: [],
+  },
   rankings: {},
   slopes: [],
 })
@@ -396,6 +414,11 @@ function formatSigned(value) {
   return `${number > 0 ? '+' : ''}${number.toFixed(2)}`
 }
 
+function formatFrequency(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number.toFixed(1) : '-'
+}
+
 function alarmTagType(level) {
   if (level === 'critical' || level === 'serious') return 'danger'
   if (level === 'warning') return 'warning'
@@ -440,7 +463,23 @@ async function loadOverview() {
     if (!result.success) throw new Error(result.message || '加载数据概况失败')
     Object.assign(overview.summary, result.data.summary || {})
     overview.rankings = result.data.rankings || {}
-    overview.slopes = result.data.slopes || []
+    try {
+      const frequencyResponse = await fetch(`${API_DATA}/api/monitoring-data/overview/frequency?${params}`)
+      const frequencyResult = await frequencyResponse.json()
+      if (frequencyResult.success) {
+        overview.frequency = frequencyResult.data
+        const bySlope = new Map((frequencyResult.data.by_slope || []).map((item) => [String(item.slope_id), item]))
+        overview.slopes = (result.data.slopes || []).map((slope) => ({
+          ...slope,
+          avg_monitor_interval_days: bySlope.get(String(slope.slope_id))?.avg_interval_days ?? null,
+        }))
+      } else {
+        overview.slopes = result.data.slopes || []
+      }
+    } catch (frequencyError) {
+      console.warn('平均监测频率加载失败:', frequencyError)
+      overview.slopes = result.data.slopes || []
+    }
     if (route.query.pointId) await openRoutePoint(String(route.query.pointId))
   } catch (error) {
     if (error.name !== 'AbortError') ElMessage.error(error.message || '加载数据概况失败')
@@ -764,11 +803,129 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
+.secondary-insights {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+  gap: 12px;
+  margin-top: 14px;
+  align-items: stretch;
+}
+
+.secondary-insights .frequency-board,
+.secondary-insights .ranking-board {
+  min-width: 0;
+  margin-top: 0;
+  border: 1px solid #e4ebe9;
+  border-top: 1px solid #e4ebe9;
+  background: #fbfdfc;
+}
+
+.frequency-board {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid #dce9e6;
+  background: linear-gradient(135deg, #f3faf8 0%, #ffffff 58%);
+}
+
+.frequency-heading {
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 6px;
+}
+
+.frequency-heading h3 {
+  margin: 0;
+  color: #1f4e54;
+  font-size: 16px;
+}
+
+.frequency-heading p {
+  display: none;
+  color: #71858a;
+  font-size: 12px;
+}
+
+.frequency-cutoff {
+  color: #688087;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.frequency-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.frequency-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  margin-bottom: 0;
+  border-top: 1px solid #e4efec;
+  border-bottom: 1px solid #e4efec;
+}
+
+.frequency-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 14px;
+}
+
+.frequency-metric + .frequency-metric {
+  border-left: 1px solid #e4efec;
+}
+
+.frequency-metric strong {
+  color: #147766;
+  font-size: 19px;
+}
+
+.frequency-metric span {
+  color: #71858a;
+  font-size: 12px;
+}
+
+.frequency-table {
+  margin-top: 10px;
+  background: transparent;
+}
+
+.frequency-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.frequency-type i {
+  width: 7px;
+  height: 18px;
+  border-radius: 1px;
+}
+
 .ranking-board,
 .slope-overview-section {
   margin-top: 20px;
   border-top: 1px solid #e4e7ed;
   padding-top: 16px;
+}
+
+.ranking-board {
+  margin-top: 12px;
+  padding-top: 10px;
+}
+
+.ranking-board .section-heading {
+  margin-bottom: 7px;
+}
+
+.ranking-board .section-heading p {
+  display: none;
+}
+
+.compact-note {
+  color: #a0a7ad;
+  font-size: 11px;
 }
 
 .section-heading {
@@ -804,7 +961,7 @@ onBeforeUnmount(() => {
 
 .ranking-column {
   min-width: 0;
-  padding: 12px 14px;
+  padding: 7px 10px;
 }
 
 .ranking-column + .ranking-column {
@@ -815,7 +972,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 7px;
+  margin-bottom: 3px;
   color: #303133;
   font-size: 13px;
   font-weight: 600;
@@ -844,8 +1001,8 @@ onBeforeUnmount(() => {
   grid-template-columns: 24px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
-  min-height: 48px;
-  padding: 6px 2px;
+  min-height: 34px;
+  padding: 3px 2px;
   border-top: 1px solid #f0f2f5;
 }
 
@@ -878,7 +1035,7 @@ onBeforeUnmount(() => {
 }
 
 .rank-main small {
-  margin-top: 3px;
+  display: none;
   color: #909399;
   font-size: 11px;
 }
@@ -1078,6 +1235,10 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1100px) {
+  .secondary-insights {
+    grid-template-columns: 1fr;
+  }
+
   .overview-filter {
     grid-template-columns: repeat(2, minmax(180px, 1fr));
   }
@@ -1108,6 +1269,7 @@ onBeforeUnmount(() => {
 @media (max-width: 760px) {
   .overview-filter,
   .summary-strip,
+  .frequency-metrics,
   .point-kpis {
     grid-template-columns: 1fr;
   }
@@ -1117,9 +1279,19 @@ onBeforeUnmount(() => {
   }
 
   .summary-item + .summary-item,
+  .frequency-metric + .frequency-metric,
   .point-kpis > div + div {
     border-top: 1px solid #ebeef5;
     border-left: 0;
+  }
+
+  .frequency-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .frequency-cutoff {
+    white-space: normal;
   }
 
   .point-change-row {

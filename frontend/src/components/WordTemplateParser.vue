@@ -3,10 +3,10 @@
     <el-card class="parser-card">
       <template #header>
         <div class="card-header">
-          <span>Word 模板解析</span>
+          <span>Word / PDF 模板解析</span>
           <el-button type="primary" size="small" @click="triggerFileUpload">
             <el-icon><Upload /></el-icon>
-            上传 Word 模板
+            上传文档模板
           </el-button>
         </div>
       </template>
@@ -14,7 +14,7 @@
       <input
         ref="fileInput"
         type="file"
-        accept=".docx"
+        accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         style="display: none"
         @change="handleFileChange"
       />
@@ -22,18 +22,45 @@
       <!-- 上传提示 -->
       <div v-if="!parsedContent && !isParsing" class="upload-tip">
         <el-icon :size="48" color="#909399"><Document /></el-icon>
-        <p>点击上方按钮上传 Word 模板文件 (.docx)</p>
+        <p>点击上方按钮上传 Word 或 PDF 模板（.docx / .pdf）</p>
+        <p class="tip-text">单个文件最大 100MB；PDF 需包含可复制的文字层</p>
         <p class="tip-text">系统会自动识别模板中的占位符，如：{{placeholderExample}}</p>
       </div>
 
       <!-- 解析状态 -->
       <div v-if="isParsing" class="parsing-status">
         <el-icon class="is-loading" :size="32"><Loading /></el-icon>
-        <p>正在解析 Word 文档...</p>
+        <p>正在解析 {{ sourceFormat === 'pdf' ? 'PDF' : 'Word' }} 文档...</p>
+        <el-progress v-if="parseProgress > 0" :percentage="parseProgress" :stroke-width="8" />
       </div>
 
       <!-- 解析结果 -->
       <div v-if="parsedContent && !isParsing" class="parse-result">
+        <el-alert
+          :title="`${sourceFile?.name || '文档'} · ${sourceFormat.toUpperCase()} · ${formatFileSize(sourceFile?.size || 0)}`"
+          description="解析结果用于识别章节和占位符；复杂排版、图片及扫描件仍需人工复核。"
+          type="success"
+          :closable="false"
+          show-icon
+        />
+        <el-alert
+          v-if="sourceFormat === 'docx'"
+          class="template-language-guide"
+          title="该 DOCX 将作为最终排版母版"
+          type="info"
+          :closable="false"
+          show-icon
+        >
+          <template #default>
+            <div class="syntax-grid">
+              <span><b>字段：</b><code>{报告标题}</code></span>
+              <span><b>条件：</b><code>{IF hasWarnings}</code>…<code>{END-IF}</code></span>
+              <span><b>循环：</b><code>{FOR row IN 地表位移统计表Rows}</code>…<code>{$row.测点}</code>…<code>{END-FOR row}</code></span>
+              <span><b>图片：</b><code>{IMAGE image("变化速率图")}</code></span>
+            </div>
+            <div class="syntax-tip">指令直接写在 Word 对应位置，系统会保留原文档的封面、字体、表格、页眉页脚和分节布局。PDF 仅用于识别章节，不能作为可编辑 Word 排版母版。</div>
+          </template>
+        </el-alert>
         <!-- 占位符列表 -->
         <div v-if="placeholders.length > 0" class="placeholders-section">
           <h4>识别到的占位符 ({{ placeholders.length }} 个)</h4>
@@ -123,6 +150,7 @@
           <el-select v-model="templateForm.type" style="width: 100%">
             <el-option label="周报模板" value="weekly" />
             <el-option label="月报模板" value="monthly" />
+            <el-option label="监理例会材料" value="supervision_meeting" />
             <el-option label="自定义模板" value="custom" />
           </el-select>
         </el-form-item>
@@ -147,6 +175,7 @@
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import mammoth from 'mammoth'
+import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.mjs?url'
 import { API_APP, TEMPLATES_PATH } from '../config/api'
 import {
   Upload,
@@ -166,9 +195,11 @@ const emit = defineEmits(['apply-template', 'save-template'])
 // 文件输入引用
 const fileInput = ref(null)
 const sourceFile = ref(null)
+const sourceFormat = ref('docx')
 
 // 状态
 const isParsing = ref(false)
+const parseProgress = ref(0)
 const parsedContent = ref(null)
 const placeholders = ref([])
 const documentStructure = ref([])
@@ -228,6 +259,94 @@ const triggerFileUpload = () => {
   fileInput.value.click()
 }
 
+const formatFileSize = (bytes) => {
+  if (!bytes) return '0 MB'
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+const extractPdfText = async (arrayBuffer) => {
+  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) })
+  loadingTask.onProgress = ({ loaded, total }) => {
+    if (total > 0) parseProgress.value = Math.min(90, Math.round((loaded / total) * 90))
+  }
+  const pdf = await loadingTask.promise
+  const pages = []
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber)
+      const textContent = await page.getTextContent()
+      const lines = []
+      let line = ''
+      textContent.items.forEach((item) => {
+        if (!item.str) return
+        line += `${line ? ' ' : ''}${item.str}`
+        if (item.hasEOL) {
+          lines.push(line)
+          line = ''
+        }
+      })
+      if (line) lines.push(line)
+      pages.push(lines.join('\n'))
+      parseProgress.value = Math.max(parseProgress.value, Math.round((pageNumber / pdf.numPages) * 100))
+    }
+  } finally {
+    await pdf.destroy()
+  }
+  return pages.join('\n\n')
+}
+
+const normalizeTextLine = (value = '') => {
+  return String(value)
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\s+([，。；：、,.!?！？])/g, '$1')
+    .trim()
+}
+
+const getPlainTextFromHtml = (html = '') => {
+  if (!html) return ''
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(html, 'text/html')
+  return Array.from(doc.body.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,td,th'))
+    .map(node => normalizeTextLine(node.textContent || ''))
+    .filter(Boolean)
+    .join('\n')
+}
+
+const extractWordContent = async (arrayBuffer) => {
+  const styleMap = [
+    "p[style-name='Title'] => h1:fresh",
+    "p[style-name='标题'] => h1:fresh",
+    "p[style-name='Subtitle'] => h2:fresh",
+    "p[style-name='副标题'] => h2:fresh",
+    "p[style-name='Heading 1'] => h1:fresh",
+    "p[style-name='Heading 2'] => h2:fresh",
+    "p[style-name='Heading 3'] => h3:fresh",
+    "p[style-name='Heading 4'] => h4:fresh",
+    "p[style-name='标题 1'] => h1:fresh",
+    "p[style-name='标题 2'] => h2:fresh",
+    "p[style-name='标题 3'] => h3:fresh",
+    "p[style-name='标题 4'] => h4:fresh",
+    "p[style-name='标题1'] => h1:fresh",
+    "p[style-name='标题2'] => h2:fresh",
+    "p[style-name='标题3'] => h3:fresh",
+    "p[style-name='标题4'] => h4:fresh"
+  ]
+
+  const [rawTextResult, htmlResult] = await Promise.all([
+    mammoth.extractRawText({ arrayBuffer }),
+    mammoth.convertToHtml({ arrayBuffer }, { styleMap, includeDefaultStyleMap: true })
+  ])
+  const rawText = rawTextResult.value || ''
+  const htmlText = getPlainTextFromHtml(htmlResult.value || '')
+  return {
+    text: normalizeTextLine(rawText) ? rawText : htmlText,
+    html: htmlResult.value || ''
+  }
+}
+
 const loadPlaceholderDictionary = async () => {
   try {
     const response = await fetch(`${API_APP}${TEMPLATES_PATH}/placeholders/dictionary`)
@@ -244,38 +363,53 @@ const loadPlaceholderDictionary = async () => {
 const handleFileChange = async (event) => {
   const file = event.target.files[0]
   if (!file) return
-  sourceFile.value = file
+  const extension = file.name.split('.').pop()?.toLowerCase()
 
   // 检查文件类型
-  if (!file.name.endsWith('.docx')) {
-    ElMessage.error('请上传 .docx 格式的 Word 文档')
+  if (!['docx', 'pdf'].includes(extension)) {
+    ElMessage.error('请上传 .docx 格式的 Word 文档或 .pdf 文档')
+    event.target.value = ''
     return
   }
 
-  // 检查文件大小（最大 10MB）
-  if (file.size > 10 * 1024 * 1024) {
-    ElMessage.error('文件大小不能超过 10MB')
+  // 文档模板支持大文件，统一限制为 100MB。
+  if (file.size > 100 * 1024 * 1024) {
+    ElMessage.error('文件大小不能超过 100MB')
+    event.target.value = ''
     return
   }
 
+  sourceFile.value = file
+  sourceFormat.value = extension
   isParsing.value = true
+  parseProgress.value = 1
 
   try {
     const arrayBuffer = await file.arrayBuffer()
-    const result = await mammoth.extractRawText({ arrayBuffer })
+    const parsedDocument = extension === 'pdf'
+      ? { text: await extractPdfText(arrayBuffer), html: '' }
+      : await extractWordContent(arrayBuffer)
+    const content = parsedDocument.text || ''
 
-    parsedContent.value = result.value
+    if (!content.trim() && extension === 'pdf') {
+      throw new Error('该 PDF 没有可读取的文字层，可能是扫描件，请先进行 OCR 识别')
+    }
+
+    parsedContent.value = content
 
     // 解析占位符
-    parsePlaceholders(result.value)
+    parsePlaceholders(content)
 
     // 解析文档结构
-    parseDocumentStructure(result.value)
+    parseDocumentStructure(content, parsedDocument.html)
 
-    ElMessage.success('Word 模板解析成功')
+    parseProgress.value = 100
+    ElMessage.success(`${extension === 'pdf' ? 'PDF' : 'Word'} 模板解析成功`)
   } catch (error) {
-    console.error('解析 Word 文档失败:', error)
-    ElMessage.error('解析 Word 文档失败，请检查文件格式')
+    console.error('解析文档失败:', error)
+    parsedContent.value = null
+    sourceFile.value = null
+    ElMessage.error(error.message || '解析文档失败，请检查文件格式')
   } finally {
     isParsing.value = false
     // 清空文件输入，允许重复上传同一文件
@@ -292,7 +426,11 @@ const parsePlaceholders = (content) => {
   placeholders.value = []
 
   for (const match of matches) {
-    const placeholderName = `{${match[1]}}`
+    const command = match[1].trim()
+    const imageMatch = command.match(/^IMAGE\s+image\(["'“”]([^"'“”]+)["'“”]\)$/i)
+    const isControlCommand = /^(?:FOR|END-FOR|IF|END-IF|INS|IMAGE|EXEC|QUERY|ALIAS|HTML|LINK)\b/i.test(command) || /^[=!]/.test(command)
+    if (isControlCommand && !imageMatch) continue
+    const placeholderName = imageMatch ? `{${imageMatch[1]}}` : `{${command}}`
 
     if (!found.has(placeholderName)) {
       found.add(placeholderName)
@@ -318,24 +456,107 @@ const parsePlaceholders = (content) => {
   }
 }
 
+const getDocumentBlocksFromHtml = (html = '') => {
+  if (!html) return []
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(html, 'text/html')
+  return Array.from(doc.body.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li'))
+    .map((node, index) => {
+      const text = normalizeTextLine(node.textContent || '')
+      if (!text) return null
+      const tagName = node.tagName.toLowerCase()
+      return {
+        text,
+        index,
+        wordHeading: /^h[1-6]$/.test(tagName),
+        tagName
+      }
+    })
+    .filter(Boolean)
+}
+
+const getDocumentBlocksFromText = (content = '') => {
+  return content
+    .split('\n')
+    .map((line, index) => ({ text: normalizeTextLine(line), index, wordHeading: false, tagName: '' }))
+    .filter(item => item.text)
+}
+
+const isLikelyHeading = (line = '') => {
+  const text = normalizeTextLine(line)
+  if (!text) return false
+  if (text.length > 80) return false
+  if (/[。；;]$/.test(text) && text.length > 24) return false
+
+  const chineseNumber = '一二三四五六七八九十百零〇两'
+  const headingPatterns = [
+    new RegExp(`^第[${chineseNumber}\\d]+\\s*[章节篇部分]`),
+    new RegExp(`^[${chineseNumber}]+[、.．]\\s*\\S+`),
+    new RegExp(`^（[${chineseNumber}\\d]+）\\s*\\S+`),
+    new RegExp(`^\\([${chineseNumber}\\d]+\\)\\s*\\S+`),
+    /^\d+(\.\d+){1,4}[、.．]?\s*\S+/,
+    /^\d+[、.．]\s*\S+/,
+    /^\d+[）)]\s*\S+/,
+    /^[A-Z][、.．]\s*\S+/
+  ]
+  if (headingPatterns.some(pattern => pattern.test(text))) return true
+
+  const unnumberedHeadingKeywords = [
+    '工程概况',
+    '项目概况',
+    '施工概况',
+    '监控概况',
+    '监测概况',
+    '监测内容',
+    '监测依据',
+    '监测方法',
+    '监测成果',
+    '监测情况',
+    '数据分析',
+    '变化分析',
+    '巡视巡查',
+    '巡检情况',
+    '预警情况',
+    '雨量分析',
+    '结论',
+    '建议',
+    '下阶段工作'
+  ]
+  if (text.length <= 28 && unnumberedHeadingKeywords.some(keyword => text.includes(keyword))) return true
+
+  return false
+}
+
+const isLikelyTableTitle = (line = '') => {
+  const text = normalizeTextLine(line)
+  return /^表\s*\d+([-.．]\d+)*\s*[：:、\s]/.test(text) ||
+    /^Table\s*\d+/i.test(text)
+}
+
+const isLikelyChartTitle = (line = '') => {
+  const text = normalizeTextLine(line)
+  return /^图\s*\d+([-.．]\d+)*\s*[：:、\s]/.test(text) ||
+    /^Figure\s*\d+/i.test(text)
+}
+
 // 解析文档结构
-const parseDocumentStructure = (content) => {
-  const lines = content.split('\n').filter(line => line.trim())
+const parseDocumentStructure = (content, html = '') => {
+  const htmlBlocks = getDocumentBlocksFromHtml(html)
+  const allLines = htmlBlocks.length ? htmlBlocks : getDocumentBlocksFromText(content)
+  const lines = allLines.slice(0, 2000)
   const structure = []
 
-  lines.forEach((line, index) => {
-    const trimmedLine = line.trim()
+  lines.forEach((block, index) => {
+    const trimmedLine = block.text
     let type = 'text'
     let hasPlaceholder = false
 
     // 判断类型
-    if (/^第[一二三四五六七八九十]+[章节]/.test(trimmedLine) ||
-        /^[一二三四五六七八九十]+[、.]/.test(trimmedLine) ||
-        /^\d+[、.]/.test(trimmedLine)) {
+    if (block.wordHeading || isLikelyHeading(trimmedLine)) {
       type = 'heading'
-    } else if (trimmedLine.includes('表') && trimmedLine.includes('：')) {
+    } else if (isLikelyTableTitle(trimmedLine)) {
       type = 'tableTitle'
-    } else if (trimmedLine.includes('图') && trimmedLine.includes('：')) {
+    } else if (isLikelyChartTitle(trimmedLine)) {
       type = 'chartTitle'
     }
 
@@ -350,7 +571,8 @@ const parseDocumentStructure = (content) => {
         content: trimmedLine.substring(0, 100) + (trimmedLine.length > 100 ? '...' : ''),
         fullContent: trimmedLine,
         hasPlaceholder,
-        index
+        index,
+        source: block.wordHeading ? 'word-heading' : block.tagName || 'text'
       })
     }
   })
@@ -369,6 +591,7 @@ const getPlaceholderTypeTag = (type) => {
     reportType: 'info',
     chart: 'danger',
     table: 'danger',
+    'section-list': 'warning',
     data: 'warning',
     custom: ''
   }
@@ -386,6 +609,7 @@ const getPlaceholderTypeLabel = (type) => {
     reportType: '报告类型',
     chart: '图表',
     table: '表格',
+    'section-list': '分章节',
     data: '数据',
     custom: '自定义',
   }
@@ -447,6 +671,8 @@ const applyTemplate = () => {
 const resetParser = () => {
   parsedContent.value = null
   sourceFile.value = null
+  sourceFormat.value = 'docx'
+  parseProgress.value = 0
   placeholders.value = []
   documentStructure.value = []
   fileInput.value.value = ''
@@ -475,6 +701,7 @@ const confirmSaveTemplate = () => {
     placeholders: placeholders.value,
     structure: documentStructure.value,
     file: sourceFile.value,
+    sourceFormat: sourceFormat.value,
     createdAt: new Date()
   }
 
@@ -542,6 +769,33 @@ onMounted(() => {
 
 .parse-result {
   padding: 10px 0;
+}
+
+.template-language-guide {
+  margin-top: 14px;
+}
+
+.syntax-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+  color: #334155;
+  line-height: 1.7;
+}
+
+.syntax-grid code {
+  padding: 2px 5px;
+  border: 1px solid #dbe5f0;
+  border-radius: 3px;
+  background: #f8fafc;
+  color: #1d4ed8;
+  font-family: Consolas, monospace;
+}
+
+.syntax-tip {
+  margin-top: 8px;
+  color: #64748b;
+  line-height: 1.6;
 }
 
 .placeholders-section,

@@ -48,7 +48,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: Number(process.env.UPLOAD_MAX_SIZE || 20 * 1024 * 1024),
+    fileSize: Number(process.env.UPLOAD_MAX_SIZE || 100 * 1024 * 1024),
     files: 10,
   },
   fileFilter(_req, file, cb) {
@@ -127,6 +127,40 @@ router.get('/', auth, async (req, res) => {
     console.error('获取文件列表失败:', error)
     res.status(500).json({ success: false, message: '获取文件列表失败' })
   }
+})
+
+router.get('/:id/download', auth, async (req, res) => {
+  try {
+    const [[asset]] = await pool.query(
+      'SELECT id, original_name, file_path, mime_type FROM file_assets WHERE id = ?',
+      [req.params.id]
+    )
+    if (!asset) return res.status(404).json({ success: false, message: '文件不存在' })
+
+    const relative = String(asset.file_path || '').replace(/^[/\\]+uploads[/\\]?/i, '')
+    const resolved = path.resolve(uploadRoot, relative)
+    const root = path.resolve(uploadRoot)
+    if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+      return res.status(400).json({ success: false, message: '文件路径不合法' })
+    }
+    if (!fs.existsSync(resolved)) return res.status(404).json({ success: false, message: '文件已丢失' })
+
+    const downloadName = asset.original_name || path.basename(resolved)
+    res.setHeader('Content-Type', asset.mime_type || 'application/octet-stream')
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`)
+    return res.sendFile(resolved)
+  } catch (error) {
+    console.error('下载文件失败:', error)
+    return res.status(500).json({ success: false, message: '下载文件失败' })
+  }
+})
+
+router.use((error, _req, res, _next) => {
+  if (error?.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ success: false, message: '单个文件不能超过 100MB' })
+  }
+  console.error('文件上传失败:', error)
+  res.status(400).json({ success: false, message: error.message || '文件上传失败' })
 })
 
 module.exports = router
